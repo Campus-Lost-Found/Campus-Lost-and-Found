@@ -1,24 +1,35 @@
 import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
-
+import 'package:crypto/crypto.dart';
 // ---------------------------------------------------------------------------
 // Auth logic (in-memory for now; replace with Firebase/API later)
 // ---------------------------------------------------------------------------
+enum UserRole {
+  student,
+  staff,
+  admin,
+}
 
 class UserRecord {
   final String name;
   final String email;
   final String salt;
-  final String passwordHash; // never store the plain password
+  final String passwordHash;
+  final UserRole role;
 
-  UserRecord(this.name, this.email, this.salt, this.passwordHash);
+  UserRecord(
+    this.name,
+    this.email,
+    this.salt,
+    this.passwordHash,
+    this.role,
+  );
 }
-
 class AuthService {
   static final Map<String, UserRecord> _users = {};
 
-  static get sha256 => null;
+  
 
   static String _makeSalt() {
     final random = Random.secure();
@@ -37,7 +48,13 @@ class AuthService {
       return 'An account with this email already exists.';
     }
     final salt = _makeSalt();
-    _users[key] = UserRecord(name.trim(), key, salt, _hash(password, salt));
+    _users[key] = UserRecord(
+      name.trim(),
+      key,
+      salt,
+      _hash(password, salt),
+      UserRole.student,
+    );
     return null;
   }
 
