@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'auth_service.dart';
+import 'local_store.dart';
 
 const Color _blue = Color(0xFF2563EB);
 const Color _lightBlue = Color(0xFFEFF6FF);
@@ -36,23 +36,33 @@ class LostReport {
     required this.createdAt,
   });
 
-  factory LostReport.fromSnapshot(
-    QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
-  ) {
-    final data = snapshot.data();
+  factory LostReport.fromJson(Map<String, dynamic> data) {
     return LostReport(
-      id: snapshot.id,
+      id: data['id'] as String,
       ownerId: data['ownerId'] as String,
       ownerEmail: data['ownerEmail'] as String,
       title: data['title'] as String,
       description: data['description'] as String,
       category: data['category'] as String,
-      dateLost: (data['dateLost'] as Timestamp).toDate(),
+      dateLost: DateTime.parse(data['dateLost'] as String),
       location: data['location'] as String,
       status: data['status'] as String,
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: DateTime.parse(data['createdAt'] as String),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'ownerId': ownerId,
+    'ownerEmail': ownerEmail,
+    'title': title,
+    'description': description,
+    'category': category,
+    'dateLost': dateLost.toIso8601String(),
+    'location': location,
+    'status': status,
+    'createdAt': createdAt.toIso8601String(),
+  };
 }
 
 class LostReportSession {
@@ -66,20 +76,30 @@ class LostReportSession {
 }
 
 class LostReportRepository {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static const String _storageKey = 'campus_find_reports';
+
+  static Future<List<LostReport>> _reports() async {
+    final records = await LocalStore.readRecords(_storageKey);
+    return records.map(LostReport.fromJson).toList(growable: true);
+  }
+
+  static Future<void> _save(List<LostReport> reports) async {
+    await LocalStore.writeRecords(
+      _storageKey,
+      reports.map((report) => report.toJson()).toList(),
+    );
+  }
 
   static Future<List<LostReport>> reportsFor(String ownerId) async {
-    final snapshot = await _firestore
-        .collection('reports')
-        .where('ownerId', isEqualTo: ownerId)
-        .get();
-    return snapshot.docs.map(LostReport.fromSnapshot).toList(growable: false);
+    final reports = await _reports();
+    return List<LostReport>.unmodifiable(
+      reports.where((report) => report.ownerId == ownerId),
+    );
   }
 
   static Future<List<LostReport>> allForStaffReview() async {
     AuthService.requireStaff();
-    final snapshot = await _firestore.collection('reports').get();
-    return snapshot.docs.map(LostReport.fromSnapshot).toList(growable: false);
+    return List<LostReport>.unmodifiable(await _reports());
   }
 
   static Future<void> review(String reportId, String status) async {
@@ -88,9 +108,25 @@ class LostReportRepository {
     if (!allowedStatuses.contains(status)) {
       throw ArgumentError.value(status, 'status', 'Unsupported report status');
     }
-    await _firestore.collection('reports').doc(reportId).update({
-      'status': status,
-    });
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    reports[index] = LostReport(
+      id: report.id,
+      ownerId: report.ownerId,
+      ownerEmail: report.ownerEmail,
+      title: report.title,
+      description: report.description,
+      category: report.category,
+      dateLost: report.dateLost,
+      location: report.location,
+      status: status,
+      createdAt: report.createdAt,
+    );
+    await _save(reports);
   }
 
   static Future<LostReport> add({
@@ -103,9 +139,8 @@ class LostReportRepository {
     final user = AuthService.currentUser;
     if (user == null) throw const AccessDeniedException();
     final now = DateTime.now();
-    final reference = _firestore.collection('reports').doc();
     final report = LostReport(
-      id: reference.id,
+      id: LocalStore.createId(),
       ownerId: user.id,
       ownerEmail: user.email,
       title: title.trim(),
@@ -116,17 +151,9 @@ class LostReportRepository {
       status: 'Open',
       createdAt: now,
     );
-    await reference.set({
-      'ownerId': report.ownerId,
-      'ownerEmail': report.ownerEmail,
-      'title': report.title,
-      'description': report.description,
-      'category': report.category,
-      'dateLost': Timestamp.fromDate(report.dateLost),
-      'location': report.location,
-      'status': report.status,
-      'createdAt': Timestamp.fromDate(now),
-    });
+    final reports = await _reports();
+    reports.add(report);
+    await _save(reports);
     return report;
   }
 }
@@ -150,24 +177,43 @@ class LostReportClaim {
     required this.createdAt,
   });
 
-  factory LostReportClaim.fromSnapshot(
-    QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
-  ) {
-    final data = snapshot.data();
+  factory LostReportClaim.fromJson(Map<String, dynamic> data) {
     return LostReportClaim(
-      id: snapshot.id,
+      id: data['id'] as String,
       claimantId: data['claimantId'] as String,
       reportId: data['reportId'] as String,
       claimantEmail: data['claimantEmail'] as String,
       details: data['details'] as String,
       status: data['status'] as String,
-      createdAt: (data['createdAt'] as Timestamp).toDate(),
+      createdAt: DateTime.parse(data['createdAt'] as String),
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'claimantId': claimantId,
+    'reportId': reportId,
+    'claimantEmail': claimantEmail,
+    'details': details,
+    'status': status,
+    'createdAt': createdAt.toIso8601String(),
+  };
 }
 
 class LostReportClaimRepository {
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static const String _storageKey = 'campus_find_claims';
+
+  static Future<List<LostReportClaim>> _claims() async {
+    final records = await LocalStore.readRecords(_storageKey);
+    return records.map(LostReportClaim.fromJson).toList(growable: true);
+  }
+
+  static Future<void> _save(List<LostReportClaim> claims) async {
+    await LocalStore.writeRecords(
+      _storageKey,
+      claims.map((claim) => claim.toJson()).toList(),
+    );
+  }
 
   static Future<LostReportClaim> submit({
     required String reportId,
@@ -175,10 +221,9 @@ class LostReportClaimRepository {
   }) async {
     final user = AuthService.currentUser;
     if (user == null) throw const AccessDeniedException();
-    final reference = _firestore.collection('claims').doc();
     final createdAt = DateTime.now();
     final claim = LostReportClaim(
-      id: reference.id,
+      id: LocalStore.createId(),
       claimantId: user.id,
       reportId: reportId,
       claimantEmail: user.email,
@@ -186,23 +231,15 @@ class LostReportClaimRepository {
       status: 'Pending',
       createdAt: createdAt,
     );
-    await reference.set({
-      'claimantId': claim.claimantId,
-      'claimantEmail': claim.claimantEmail,
-      'reportId': claim.reportId,
-      'details': claim.details,
-      'status': claim.status,
-      'createdAt': Timestamp.fromDate(createdAt),
-    });
+    final claims = await _claims();
+    claims.add(claim);
+    await _save(claims);
     return claim;
   }
 
   static Future<List<LostReportClaim>> allForStaffReview() async {
     AuthService.requireStaff();
-    final snapshot = await _firestore.collection('claims').get();
-    return snapshot.docs
-        .map(LostReportClaim.fromSnapshot)
-        .toList(growable: false);
+    return List<LostReportClaim>.unmodifiable(await _claims());
   }
 
   static Future<void> review(String claimId, String status) async {
@@ -211,9 +248,22 @@ class LostReportClaimRepository {
     if (!allowedStatuses.contains(status)) {
       throw ArgumentError.value(status, 'status', 'Unsupported claim status');
     }
-    await _firestore.collection('claims').doc(claimId).update({
-      'status': status,
-    });
+    final claims = await _claims();
+    final index = claims.indexWhere((claim) => claim.id == claimId);
+    if (index < 0) {
+      throw ArgumentError.value(claimId, 'claimId', 'Claim not found');
+    }
+    final claim = claims[index];
+    claims[index] = LostReportClaim(
+      id: claim.id,
+      claimantId: claim.claimantId,
+      reportId: claim.reportId,
+      claimantEmail: claim.claimantEmail,
+      details: claim.details,
+      status: status,
+      createdAt: claim.createdAt,
+    );
+    await _save(claims);
   }
 }
 
@@ -670,7 +720,7 @@ class _ReportLostPageState extends State<ReportLostPage> {
         context,
         MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
       );
-    } on FirebaseException catch (error) {
+    } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Could not save report: ${error.message}')),
@@ -1466,16 +1516,10 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
     try {
       await LostReportRepository.review(id, status);
       if (mounted) setState(() => _queues = _loadQueues());
-    } on FirebaseException catch (error) {
+    } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              error.code == 'permission-denied'
-                  ? 'Access denied'
-                  : 'Could not update report: ${error.message}',
-            ),
-          ),
+          SnackBar(content: Text('Could not update report: ${error.message}')),
         );
       }
     } on AccessDeniedException {
@@ -1490,16 +1534,10 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
     try {
       await LostReportClaimRepository.review(id, status);
       if (mounted) setState(() => _queues = _loadQueues());
-    } on FirebaseException catch (error) {
+    } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              error.code == 'permission-denied'
-                  ? 'Access denied'
-                  : 'Could not update claim: ${error.message}',
-            ),
-          ),
+          SnackBar(content: Text('Could not update claim: ${error.message}')),
         );
       }
     } on AccessDeniedException {
@@ -1530,9 +1568,7 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
           future: _queues,
           builder: (context, snapshot) {
             if (snapshot.hasError) {
-              if (snapshot.error is FirebaseException &&
-                  (snapshot.error as FirebaseException).code ==
-                      'permission-denied') {
+              if (snapshot.error is AccessDeniedException) {
                 return const AccessDeniedPage();
               }
               return Center(
@@ -1670,16 +1706,10 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
     try {
       await AuthService.updateRole(userId, role);
       if (mounted) setState(() => _users = AuthService.allUsers());
-    } on FirebaseException catch (error) {
+    } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              error.code == 'permission-denied'
-                  ? 'Access denied'
-                  : 'Could not update role: ${error.message}',
-            ),
-          ),
+          SnackBar(content: Text('Could not update role: ${error.message}')),
         );
       }
     } on AccessDeniedException {
@@ -1700,9 +1730,7 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
         future: _users,
         builder: (context, snapshot) {
           if (snapshot.hasError) {
-            if (snapshot.error is FirebaseException &&
-                (snapshot.error as FirebaseException).code ==
-                    'permission-denied') {
+            if (snapshot.error is AccessDeniedException) {
               return const AccessDeniedPage();
             }
             return Center(

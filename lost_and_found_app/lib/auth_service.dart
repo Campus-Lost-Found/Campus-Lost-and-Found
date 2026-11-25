@@ -1,6 +1,10 @@
+import 'dart:convert';
+import 'dart:math';
+
+import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+
+import 'local_store.dart';
 
 enum UserRole {
   student,
@@ -21,34 +25,52 @@ class UserRecord {
   final String id;
   final String name;
   final String email;
+  final String passwordSalt;
+  final String passwordHash;
   final UserRole role;
 
   const UserRecord({
     required this.id,
     required this.name,
     required this.email,
+    required this.passwordSalt,
+    required this.passwordHash,
     required this.role,
   });
 
-  factory UserRecord.fromSnapshot(
-    DocumentSnapshot<Map<String, dynamic>> snapshot,
-  ) {
-    final data = snapshot.data();
-    if (data == null) {
-      throw StateError('User profile ${snapshot.id} does not exist.');
-    }
-    final roleName = data['role'];
+  factory UserRecord.fromJson(Map<String, dynamic> json) {
+    final roleName = json['role'];
     final role = UserRole.values.where((value) => value.name == roleName);
     if (role.isEmpty) {
-      throw StateError('User profile ${snapshot.id} has an invalid role.');
+      throw StateError('A saved user has an invalid role.');
     }
     return UserRecord(
-      id: snapshot.id,
-      name: data['name'] as String? ?? '',
-      email: data['email'] as String? ?? '',
+      id: json['id'] as String,
+      name: json['name'] as String,
+      email: json['email'] as String,
+      passwordSalt: json['passwordSalt'] as String,
+      passwordHash: json['passwordHash'] as String,
       role: role.first,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'email': email,
+    'passwordSalt': passwordSalt,
+    'passwordHash': passwordHash,
+    'role': role.name,
+  };
+
+  UserRecord withRole(UserRole newRole) => UserRecord(
+    id: id,
+    name: name,
+    email: email,
+    passwordSalt: passwordSalt,
+    passwordHash: passwordHash,
+    role: newRole,
+  );
 }
 
 class AccessDeniedException implements Exception {
@@ -59,8 +81,8 @@ class AccessDeniedException implements Exception {
 }
 
 class AuthService {
-  static final FirebaseAuth _auth = FirebaseAuth.instance;
-  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  static const String _usersKey = 'campus_find_users';
+  static const String _sessionKey = 'campus_find_session_user_id';
   static UserRecord? _currentUser;
 
   static UserRecord? get currentUser => _currentUser;
@@ -68,34 +90,30 @@ class AuthService {
   static bool get canReview => currentRole?.canReview ?? false;
   static bool get canManageRoles => currentRole?.canManageRoles ?? false;
 
-  static void connectToEmulators() {
-    if (!const bool.fromEnvironment('USE_FIREBASE_EMULATORS')) return;
-    final configuredHost = const String.fromEnvironment(
-      'FIREBASE_EMULATOR_HOST',
-    );
-    final host = configuredHost.isNotEmpty
-        ? configuredHost
-        : !kIsWeb && defaultTargetPlatform == TargetPlatform.android
-        ? '10.0.2.2'
-        : '127.0.0.1';
-    _auth.useAuthEmulator(host, 9099);
-    _firestore.useFirestoreEmulator(host, 8080);
-  }
-
   @visibleForTesting
   static void setCurrentUserForTesting(UserRecord? user) {
     _currentUser = user;
   }
 
+  static Future<List<UserRecord>> _users() async {
+    final records = await LocalStore.readRecords(_usersKey);
+    return records.map(UserRecord.fromJson).toList(growable: true);
+  }
+
+  static Future<bool> hasUsers() async => (await _users()).isNotEmpty;
+
   static Future<UserRecord?> restoreSession() async {
-    final authUser = _auth.currentUser;
-    if (authUser == null) return null;
-    final profile = await _firestore
-        .collection('users')
-        .doc(authUser.uid)
-        .get();
-    _currentUser = UserRecord.fromSnapshot(profile);
-    return _currentUser;
+    final userId = await LocalStore.readString(_sessionKey);
+    if (userId == null) return null;
+    final users = await _users();
+    for (final user in users) {
+      if (user.id == userId) {
+        _currentUser = user;
+        return user;
+      }
+    }
+    await LocalStore.remove(_sessionKey);
+    throw StateError('The saved session has no matching user account.');
   }
 
   static Future<String?> register(
@@ -103,72 +121,70 @@ class AuthService {
     String email,
     String password,
   ) async {
-    UserCredential? credential;
-    try {
-      credential = await _auth.createUserWithEmailAndPassword(
-        email: email.trim(),
-        password: password,
-      );
-      final user = credential.user;
-      if (user == null) {
-        throw StateError('Firebase created an account without a user record.');
-      }
-      await _firestore.collection('users').doc(user.uid).set({
-        'name': name.trim(),
-        'email': user.email,
-        'role': UserRole.student.name,
-      });
-    } on FirebaseAuthException catch (error) {
-      return error.message ?? 'Could not create the account (${error.code}).';
-    } on FirebaseException catch (error) {
-      final createdUser = credential?.user;
-      if (createdUser != null) {
-        try {
-          await createdUser.delete();
-        } on FirebaseAuthException catch (cleanupError) {
-          throw StateError(
-            'Profile creation failed (${error.code}) and the new account '
-            'could not be removed (${cleanupError.code}).',
-          );
-        }
-      }
-      rethrow;
+    final users = await _users();
+    final normalizedEmail = email.trim().toLowerCase();
+    if (users.any((user) => user.email == normalizedEmail)) {
+      return 'An account with this email already exists.';
     }
-    await _auth.signOut();
+    final salt = _makeSalt();
+    final user = UserRecord(
+      id: LocalStore.createId(),
+      name: name.trim(),
+      email: normalizedEmail,
+      passwordSalt: salt,
+      passwordHash: _hash(password, salt),
+      role: UserRole.student,
+    );
+    users.add(user);
+    await LocalStore.writeRecords(
+      _usersKey,
+      users.map((record) => record.toJson()).toList(),
+    );
     return null;
   }
 
-  static Future<UserRecord?> login(String email, String password) async {
-    try {
-      final credential = await _auth.signInWithEmailAndPassword(
-        email: email.trim(),
-        password: password,
+  static Future<UserRecord> bootstrapAdmin({
+    required String name,
+    required String email,
+    required String password,
+  }) async {
+    final users = await _users();
+    if (users.isNotEmpty) {
+      throw StateError(
+        'Initial admin setup is closed because an account already exists.',
       );
-      final authUser = credential.user;
-      if (authUser == null) {
-        throw StateError('Firebase signed in without a user record.');
-      }
-      final profile = await _firestore
-          .collection('users')
-          .doc(authUser.uid)
-          .get();
-      _currentUser = UserRecord.fromSnapshot(profile);
-      return _currentUser;
-    } on FirebaseAuthException catch (error) {
-      if (const {
-        'invalid-credential',
-        'user-not-found',
-        'wrong-password',
-        'invalid-email',
-      }.contains(error.code)) {
-        return null;
-      }
-      rethrow;
     }
+    final salt = _makeSalt();
+    final admin = UserRecord(
+      id: LocalStore.createId(),
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
+      passwordSalt: salt,
+      passwordHash: _hash(password, salt),
+      role: UserRole.admin,
+    );
+    await LocalStore.writeRecords(_usersKey, [admin.toJson()]);
+    await LocalStore.writeString(_sessionKey, admin.id);
+    _currentUser = admin;
+    return admin;
+  }
+
+  static Future<UserRecord?> login(String email, String password) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    final users = await _users();
+    for (final user in users) {
+      if (user.email == normalizedEmail &&
+          _hash(password, user.passwordSalt) == user.passwordHash) {
+        await LocalStore.writeString(_sessionKey, user.id);
+        _currentUser = user;
+        return user;
+      }
+    }
+    return null;
   }
 
   static Future<void> signOut() async {
-    await _auth.signOut();
+    await LocalStore.remove(_sessionKey);
     _currentUser = null;
   }
 
@@ -182,22 +198,31 @@ class AuthService {
 
   static Future<List<UserRecord>> allUsers() async {
     requireAdmin();
-    final users = await _firestore.collection('users').get();
-    return users.docs.map(UserRecord.fromSnapshot).toList(growable: false);
+    return List<UserRecord>.unmodifiable(await _users());
   }
 
   static Future<void> updateRole(String userId, UserRole role) async {
     requireAdmin();
-    await _firestore.collection('users').doc(userId).update({
-      'role': role.name,
-    });
-    if (_currentUser?.id == userId) {
-      _currentUser = UserRecord(
-        id: _currentUser!.id,
-        name: _currentUser!.name,
-        email: _currentUser!.email,
-        role: role,
-      );
+    final users = await _users();
+    final index = users.indexWhere((user) => user.id == userId);
+    if (index < 0) {
+      throw ArgumentError.value(userId, 'userId', 'No account exists for ID');
     }
+    final updatedUser = users[index].withRole(role);
+    users[index] = updatedUser;
+    await LocalStore.writeRecords(
+      _usersKey,
+      users.map((user) => user.toJson()).toList(),
+    );
+    if (_currentUser?.id == userId) _currentUser = updatedUser;
   }
+
+  static String _makeSalt() {
+    final random = Random.secure();
+    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
+    return base64Url.encode(bytes);
+  }
+
+  static String _hash(String password, String salt) =>
+      sha256.convert(utf8.encode('$salt$password')).toString();
 }
