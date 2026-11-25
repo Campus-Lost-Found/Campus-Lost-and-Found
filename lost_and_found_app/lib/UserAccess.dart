@@ -1,56 +1,8 @@
-import 'dart:convert';
-import 'dart:math';
-
 import 'package:material_ui/material_ui.dart';
-import 'package:crypto/crypto.dart';
+import 'package:firebase_core/firebase_core.dart';
 
+import 'auth_service.dart';
 import 'lost_report.dart';
-
-// ---------------------------------------------------------------------------
-// Auth logic (in-memory for now; replace with Firebase/API later)
-// ---------------------------------------------------------------------------
-
-class UserRecord {
-  final String name;
-  final String email;
-  final String salt;
-  final String passwordHash; // never store the plain password
-
-  UserRecord(this.name, this.email, this.salt, this.passwordHash);
-}
-
-class AuthService {
-  static final Map<String, UserRecord> _users = {};
-
-  static String _makeSalt() {
-    final random = Random.secure();
-    final bytes = List<int>.generate(16, (_) => random.nextInt(256));
-    return base64Url.encode(bytes);
-  }
-
-  static String _hash(String password, String salt) {
-    return sha256.convert(utf8.encode(salt + password)).toString();
-  }
-
-  /// Returns an error message, or null if registration succeeded.
-  static String? register(String name, String email, String password) {
-    final key = email.trim().toLowerCase();
-    if (_users.containsKey(key)) {
-      return 'An account with this email already exists.';
-    }
-    final salt = _makeSalt();
-    _users[key] = UserRecord(name.trim(), key, salt, _hash(password, salt));
-    return null;
-  }
-
-  /// Returns the user if credentials are correct, otherwise null.
-  static UserRecord? login(String email, String password) {
-    final user = _users[email.trim().toLowerCase()];
-    if (user == null) return null;
-    if (_hash(password, user.salt) != user.passwordHash) return null;
-    return user;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Login page
@@ -78,18 +30,27 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    final user = AuthService.login(_emailCtrl.text, _passwordCtrl.text);
-    if (user == null) {
-      setState(() => _error = 'Invalid email or password. Please try again.');
-      return;
+    try {
+      final user = await AuthService.login(_emailCtrl.text, _passwordCtrl.text);
+      if (user == null) {
+        setState(() => _error = 'Invalid email or password. Please try again.');
+        return;
+      }
+      LostReportSession.signIn(user.email);
+      if (!mounted) return;
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const MyReportsPage()),
+      );
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        setState(() => _error = error.message ?? 'Could not sign in.');
+      }
+    } on StateError catch (error) {
+      if (mounted) setState(() => _error = error.message);
     }
-    LostReportSession.signIn(user.email);
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute(builder: (_) => const MyReportsPage()),
-    );
   }
 
   @override
@@ -546,21 +507,30 @@ class _RegisterPageState extends State<RegisterPage> {
     super.dispose();
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
-    final error = AuthService.register(
-      _nameCtrl.text,
-      _emailCtrl.text,
-      _passwordCtrl.text,
-    );
-    if (error != null) {
-      setState(() => _error = error);
-      return;
+    try {
+      final error = await AuthService.register(
+        _nameCtrl.text,
+        _emailCtrl.text,
+        _passwordCtrl.text,
+      );
+      if (error != null) {
+        setState(() => _error = error);
+        return;
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Account created! You can now log in.')),
+      );
+      Navigator.pop(context);
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        setState(() => _error = error.message ?? 'Could not create account.');
+      }
+    } on StateError catch (error) {
+      if (mounted) setState(() => _error = error.message);
     }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Account created! You can now log in.')),
-    );
-    Navigator.pop(context); // back to login
   }
 
   @override
@@ -739,10 +709,15 @@ class HomePage extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Log out',
-            onPressed: () => Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const LoginPage()),
-            ),
+            onPressed: () async {
+              await AuthService.signOut();
+              LostReportSession.signOut();
+              if (!context.mounted) return;
+              Navigator.pushReplacement(
+                context,
+                MaterialPageRoute(builder: (_) => const LoginPage()),
+              );
+            },
           ),
         ],
       ),

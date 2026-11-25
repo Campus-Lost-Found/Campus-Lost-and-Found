@@ -1,4 +1,7 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+import 'auth_service.dart';
 
 const Color _blue = Color(0xFF2563EB);
 const Color _lightBlue = Color(0xFFEFF6FF);
@@ -10,6 +13,7 @@ const Color _success = Color(0xFF16A34A);
 
 class LostReport {
   final String id;
+  final String ownerId;
   final String ownerEmail;
   final String title;
   final String description;
@@ -21,6 +25,7 @@ class LostReport {
 
   const LostReport({
     required this.id,
+    required this.ownerId,
     required this.ownerEmail,
     required this.title,
     required this.description,
@@ -30,6 +35,24 @@ class LostReport {
     required this.status,
     required this.createdAt,
   });
+
+  factory LostReport.fromSnapshot(
+    QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final data = snapshot.data();
+    return LostReport(
+      id: snapshot.id,
+      ownerId: data['ownerId'] as String,
+      ownerEmail: data['ownerEmail'] as String,
+      title: data['title'] as String,
+      description: data['description'] as String,
+      category: data['category'] as String,
+      dateLost: (data['dateLost'] as Timestamp).toDate(),
+      location: data['location'] as String,
+      status: data['status'] as String,
+      createdAt: (data['createdAt'] as Timestamp).toDate(),
+    );
+  }
 }
 
 class LostReportSession {
@@ -43,60 +66,155 @@ class LostReportSession {
 }
 
 class LostReportRepository {
-  static final List<LostReport> _reports = <LostReport>[];
+  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  static List<LostReport> reportsFor(String ownerEmail) {
-    final key = ownerEmail.trim().toLowerCase();
-    return List<LostReport>.unmodifiable(
-      _reports.where((report) => report.ownerEmail == key),
-    );
+  static Future<List<LostReport>> reportsFor(String ownerId) async {
+    final snapshot = await _firestore
+        .collection('reports')
+        .where('ownerId', isEqualTo: ownerId)
+        .get();
+    return snapshot.docs.map(LostReport.fromSnapshot).toList(growable: false);
   }
 
-  static LostReport add({
-    required String ownerEmail,
+  static Future<List<LostReport>> allForStaffReview() async {
+    AuthService.requireStaff();
+    final snapshot = await _firestore.collection('reports').get();
+    return snapshot.docs.map(LostReport.fromSnapshot).toList(growable: false);
+  }
+
+  static Future<void> review(String reportId, String status) async {
+    AuthService.requireStaff();
+    const allowedStatuses = {'Open', 'Under Review', 'Resolved', 'Rejected'};
+    if (!allowedStatuses.contains(status)) {
+      throw ArgumentError.value(status, 'status', 'Unsupported report status');
+    }
+    await _firestore.collection('reports').doc(reportId).update({
+      'status': status,
+    });
+  }
+
+  static Future<LostReport> add({
     required String title,
     required String description,
     required String category,
     required DateTime dateLost,
     required String location,
-  }) {
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final now = DateTime.now();
+    final reference = _firestore.collection('reports').doc();
     final report = LostReport(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
-      ownerEmail: ownerEmail.trim().toLowerCase(),
+      id: reference.id,
+      ownerId: user.id,
+      ownerEmail: user.email,
       title: title.trim(),
       description: description.trim(),
       category: category,
       dateLost: DateTime(dateLost.year, dateLost.month, dateLost.day),
       location: location.trim(),
       status: 'Open',
-      createdAt: DateTime.now(),
+      createdAt: now,
     );
-    _reports.add(report);
+    await reference.set({
+      'ownerId': report.ownerId,
+      'ownerEmail': report.ownerEmail,
+      'title': report.title,
+      'description': report.description,
+      'category': report.category,
+      'dateLost': Timestamp.fromDate(report.dateLost),
+      'location': report.location,
+      'status': report.status,
+      'createdAt': Timestamp.fromDate(now),
+    });
     return report;
   }
+}
 
-  static void seedDemoReports(String ownerEmail) {
-    if (reportsFor(ownerEmail).isNotEmpty) return;
-    final now = DateTime.now();
-    add(
-      ownerEmail: ownerEmail,
-      title: 'Black Wallet',
-      description: 'Leather wallet with my student card inside.',
-      category: 'Other',
-      dateLost: now.subtract(const Duration(days: 2)),
-      location: 'Library, Level 2',
-    );
-    add(
-      ownerEmail: ownerEmail,
-      title: 'Student ID Card',
-      description: 'Name card lost near the student union.',
-      category: 'ID / Cards',
-      dateLost: now.subtract(const Duration(days: 5)),
-      location: 'Student Union',
+class LostReportClaim {
+  final String id;
+  final String claimantId;
+  final String reportId;
+  final String claimantEmail;
+  final String details;
+  final String status;
+  final DateTime createdAt;
+
+  const LostReportClaim({
+    required this.id,
+    required this.claimantId,
+    required this.reportId,
+    required this.claimantEmail,
+    required this.details,
+    required this.status,
+    required this.createdAt,
+  });
+
+  factory LostReportClaim.fromSnapshot(
+    QueryDocumentSnapshot<Map<String, dynamic>> snapshot,
+  ) {
+    final data = snapshot.data();
+    return LostReportClaim(
+      id: snapshot.id,
+      claimantId: data['claimantId'] as String,
+      reportId: data['reportId'] as String,
+      claimantEmail: data['claimantEmail'] as String,
+      details: data['details'] as String,
+      status: data['status'] as String,
+      createdAt: (data['createdAt'] as Timestamp).toDate(),
     );
   }
+}
 
-  static void clear() => _reports.clear();
+class LostReportClaimRepository {
+  static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+
+  static Future<LostReportClaim> submit({
+    required String reportId,
+    required String details,
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final reference = _firestore.collection('claims').doc();
+    final createdAt = DateTime.now();
+    final claim = LostReportClaim(
+      id: reference.id,
+      claimantId: user.id,
+      reportId: reportId,
+      claimantEmail: user.email,
+      details: details.trim(),
+      status: 'Pending',
+      createdAt: createdAt,
+    );
+    await reference.set({
+      'claimantId': claim.claimantId,
+      'claimantEmail': claim.claimantEmail,
+      'reportId': claim.reportId,
+      'details': claim.details,
+      'status': claim.status,
+      'createdAt': Timestamp.fromDate(createdAt),
+    });
+    return claim;
+  }
+
+  static Future<List<LostReportClaim>> allForStaffReview() async {
+    AuthService.requireStaff();
+    final snapshot = await _firestore.collection('claims').get();
+    return snapshot.docs
+        .map(LostReportClaim.fromSnapshot)
+        .toList(growable: false);
+  }
+
+  static Future<void> review(String claimId, String status) async {
+    AuthService.requireStaff();
+    const allowedStatuses = {'Pending', 'Approved', 'Rejected'};
+    if (!allowedStatuses.contains(status)) {
+      throw ArgumentError.value(status, 'status', 'Unsupported claim status');
+    }
+    await _firestore.collection('claims').doc(claimId).update({
+      'status': status,
+    });
+  }
 }
 
 class _CategoryOption {
@@ -512,9 +630,9 @@ class _ReportLostPageState extends State<ReportLostPage> {
     return _stepKeys[_currentStep].currentState?.validate() ?? false;
   }
 
-  void _next() {
+  Future<void> _next() async {
     if (_currentStep == 3) {
-      _submit();
+      await _submit();
       return;
     }
     if (!_validateCurrentStep()) return;
@@ -531,27 +649,39 @@ class _ReportLostPageState extends State<ReportLostPage> {
     setState(() => _currentStep--);
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final email = LostReportSession.email;
     if (email == null || _category == null) return;
     if (!(_stepKeys[3].currentState?.validate() ?? false)) return;
 
-    LostReportRepository.add(
-      ownerEmail: email,
-      title: _titleCtrl.text,
-      description: _descriptionCtrl.text,
-      category: _category!,
-      dateLost: DateTime.parse(_dateCtrl.text.trim()),
-      location: _locationCtrl.text,
-    );
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Lost report saved as Open.')));
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
-    );
+    try {
+      await LostReportRepository.add(
+        title: _titleCtrl.text,
+        description: _descriptionCtrl.text,
+        category: _category!,
+        dateLost: DateTime.parse(_dateCtrl.text.trim()),
+        location: _locationCtrl.text,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Lost report saved as Open.')),
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
+      );
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
   }
 
   Widget _sectionCard({required Widget child}) {
@@ -1281,13 +1411,367 @@ class _ReportLostPageState extends State<ReportLostPage> {
   }
 }
 
-class MyReportsPage extends StatelessWidget {
-  const MyReportsPage({super.key});
+class AccessDeniedPage extends StatelessWidget {
+  const AccessDeniedPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Access denied')),
+    body: const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.lock_outline, size: 52, color: Color(0xFF9CA3AF)),
+            SizedBox(height: 12),
+            Text(
+              'Access denied',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+            ),
+            SizedBox(height: 6),
+            Text('Your account does not have permission to view this page.'),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class StaffReviewPage extends StatefulWidget {
+  const StaffReviewPage({super.key});
+
+  @override
+  State<StaffReviewPage> createState() => _StaffReviewPageState();
+}
+
+class _StaffReviewPageState extends State<StaffReviewPage> {
+  late Future<_ReviewQueues> _queues;
+
+  @override
+  void initState() {
+    super.initState();
+    _queues = AuthService.canReview
+        ? _loadQueues()
+        : Future.value(const _ReviewQueues([], []));
+  }
+
+  Future<_ReviewQueues> _loadQueues() async {
+    final reports = await LostReportRepository.allForStaffReview();
+    final claims = await LostReportClaimRepository.allForStaffReview();
+    return _ReviewQueues(reports, claims);
+  }
+
+  Future<void> _updateReport(String id, String status) async {
+    try {
+      await LostReportRepository.review(id, status);
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error.code == 'permission-denied'
+                  ? 'Access denied'
+                  : 'Could not update report: ${error.message}',
+            ),
+          ),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _updateClaim(String id, String status) async {
+    try {
+      await LostReportClaimRepository.review(id, status);
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error.code == 'permission-denied'
+                  ? 'Access denied'
+                  : 'Could not update claim: ${error.message}',
+            ),
+          ),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final email = LostReportSession.email;
-    if (email == null) {
+    if (!AuthService.canReview) return const AccessDeniedPage();
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Staff review'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Reports'),
+              Tab(text: 'Claims'),
+            ],
+          ),
+        ),
+        body: FutureBuilder<_ReviewQueues>(
+          future: _queues,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              if (snapshot.error is FirebaseException &&
+                  (snapshot.error as FirebaseException).code ==
+                      'permission-denied') {
+                return const AccessDeniedPage();
+              }
+              return Center(
+                child: Text('Could not load review queue: ${snapshot.error}'),
+              );
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final reports = snapshot.data!.reports;
+            final claims = snapshot.data!.claims;
+            return TabBarView(
+              children: [
+                reports.isEmpty
+                    ? const _EmptyReviewQueue(label: 'No reports to review.')
+                    : ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          for (final report in reports)
+                            Card(
+                              child: ListTile(
+                                title: Text(report.title),
+                                subtitle: Text(
+                                  '${report.category} · ${report.location}\n'
+                                  '${report.description}\n'
+                                  'Reported by ${report.ownerEmail}',
+                                ),
+                                isThreeLine: true,
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Update review status',
+                                  onSelected: (status) =>
+                                      _updateReport(report.id, status),
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'Under Review',
+                                      child: Text('Under review'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Resolved',
+                                      child: Text('Resolve'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Rejected',
+                                      child: Text('Reject'),
+                                    ),
+                                  ],
+                                  child: Chip(label: Text(report.status)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                claims.isEmpty
+                    ? const _EmptyReviewQueue(label: 'No claims to review.')
+                    : ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          for (final claim in claims)
+                            Card(
+                              child: ListTile(
+                                title: Text(
+                                  'Claim for report ${claim.reportId}',
+                                ),
+                                subtitle: Text(
+                                  '${claim.details}\n'
+                                  'Submitted by ${claim.claimantEmail}',
+                                ),
+                                isThreeLine: true,
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Update claim status',
+                                  onSelected: (status) =>
+                                      _updateClaim(claim.id, status),
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'Approved',
+                                      child: Text('Approve'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Rejected',
+                                      child: Text('Reject'),
+                                    ),
+                                  ],
+                                  child: Chip(label: Text(claim.status)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewQueues {
+  const _ReviewQueues(this.reports, this.claims);
+
+  final List<LostReport> reports;
+  final List<LostReportClaim> claims;
+}
+
+class _EmptyReviewQueue extends StatelessWidget {
+  const _EmptyReviewQueue({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Text(label, style: const TextStyle(color: Colors.grey)),
+  );
+}
+
+class RoleManagementPage extends StatefulWidget {
+  const RoleManagementPage({super.key});
+
+  @override
+  State<RoleManagementPage> createState() => _RoleManagementPageState();
+}
+
+class _RoleManagementPageState extends State<RoleManagementPage> {
+  late Future<List<UserRecord>> _users;
+
+  @override
+  void initState() {
+    super.initState();
+    _users = AuthService.canManageRoles
+        ? AuthService.allUsers()
+        : Future.value(const <UserRecord>[]);
+  }
+
+  Future<void> _updateRole(String userId, UserRole role) async {
+    try {
+      await AuthService.updateRole(userId, role);
+      if (mounted) setState(() => _users = AuthService.allUsers());
+    } on FirebaseException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              error.code == 'permission-denied'
+                  ? 'Access denied'
+                  : 'Could not update role: ${error.message}',
+            ),
+          ),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AuthService.canManageRoles) return const AccessDeniedPage();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Manage user roles')),
+      body: FutureBuilder<List<UserRecord>>(
+        future: _users,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            if (snapshot.error is FirebaseException &&
+                (snapshot.error as FirebaseException).code ==
+                    'permission-denied') {
+              return const AccessDeniedPage();
+            }
+            return Center(
+              child: Text('Could not load users: ${snapshot.error}'),
+            );
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final users = snapshot.data!;
+          if (users.isEmpty) {
+            return const Center(child: Text('No registered users.'));
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: users.length,
+            itemBuilder: (context, index) {
+              final user = users[index];
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    child: Text(
+                      user.name.isEmpty ? '?' : user.name[0].toUpperCase(),
+                    ),
+                  ),
+                  title: Text(user.name),
+                  subtitle: Text(user.email),
+                  trailing: DropdownButton<UserRole>(
+                    value: user.role,
+                    onChanged: (role) {
+                      if (role != null) _updateRole(user.id, role);
+                    },
+                    items: [
+                      for (final role in UserRole.values)
+                        DropdownMenuItem(value: role, child: Text(role.label)),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class MyReportsPage extends StatefulWidget {
+  const MyReportsPage({super.key});
+
+  @override
+  State<MyReportsPage> createState() => _MyReportsPageState();
+}
+
+class _MyReportsPageState extends State<MyReportsPage> {
+  late Future<List<LostReport>> _reports;
+
+  @override
+  void initState() {
+    super.initState();
+    final user = AuthService.currentUser;
+    _reports = user == null
+        ? Future.value(const <LostReport>[])
+        : LostReportRepository.reportsFor(user.id);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (AuthService.currentUser == null || LostReportSession.email == null) {
       return Scaffold(
         backgroundColor: _canvas,
         body: Column(
@@ -1301,7 +1785,6 @@ class MyReportsPage extends StatelessWidget {
       );
     }
 
-    final reports = LostReportRepository.reportsFor(email);
     return Scaffold(
       backgroundColor: _canvas,
       body: Column(
@@ -1314,39 +1797,90 @@ class MyReportsPage extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1000),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'My reports',
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w700,
-                          color: _ink,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Track every lost item you have reported.',
-                        style: TextStyle(fontSize: 13, color: _muted),
-                      ),
-                      const SizedBox(height: 20),
-                      if (reports.isEmpty)
-                        _emptyCard()
-                      else
-                        for (final report in reports) ...[
-                          _reportCard(report),
-                          const SizedBox(height: 12),
+            child: FutureBuilder<List<LostReport>>(
+              future: _reports,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Could not load reports: ${snapshot.error}'),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final reports = snapshot.data!;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1000),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'My reports',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Track every lost item you have reported.',
+                            style: TextStyle(fontSize: 13, color: _muted),
+                          ),
+                          if (AuthService.canReview ||
+                              AuthService.canManageRoles) ...[
+                            const SizedBox(height: 16),
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                if (AuthService.canReview)
+                                  OutlinedButton.icon(
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => const StaffReviewPage(),
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.fact_check_outlined),
+                                    label: const Text(
+                                      'Review reports & claims',
+                                    ),
+                                  ),
+                                if (AuthService.canManageRoles)
+                                  OutlinedButton.icon(
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute<void>(
+                                        builder: (_) =>
+                                            const RoleManagementPage(),
+                                      ),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.manage_accounts_outlined,
+                                    ),
+                                    label: const Text('Manage user roles'),
+                                  ),
+                              ],
+                            ),
+                          ],
+                          const SizedBox(height: 20),
+                          if (reports.isEmpty)
+                            _emptyCard()
+                          else
+                            for (final report in reports) ...[
+                              _reportCard(report),
+                              const SizedBox(height: 12),
+                            ],
                         ],
-                    ],
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
         ],
