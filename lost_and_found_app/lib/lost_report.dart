@@ -253,7 +253,8 @@ class LostReportRepository {
     await _recordAudit(
       reportId: reportId,
       action: 'Removed',
-      details: 'Reason: ${reason.trim().isEmpty ? 'No reason provided' : reason.trim()} '
+      details:
+          'Reason: ${reason.trim().isEmpty ? 'No reason provided' : reason.trim()} '
           'Title: ${report.title}',
     );
   }
@@ -1699,10 +1700,8 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
                   decoration: const InputDecoration(labelText: 'Category'),
                   items: lostReportCategories
                       .map(
-                        (value) => DropdownMenuItem(
-                          value: value,
-                          child: Text(value),
-                        ),
+                        (value) =>
+                            DropdownMenuItem(value: value, child: Text(value)),
                       )
                       .toList(),
                   onChanged: (value) {
@@ -1779,9 +1778,7 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
             TextField(
               key: const Key('remove_report_reason'),
               controller: reasonController,
-              decoration: const InputDecoration(
-                labelText: 'Reason (optional)',
-              ),
+              decoration: const InputDecoration(labelText: 'Reason (optional)'),
             ),
           ],
         ),
@@ -1806,10 +1803,7 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
     if (confirmed != true) return;
 
     try {
-      await LostReportRepository.remove(
-        reportId: report.id,
-        reason: reason,
-      );
+      await LostReportRepository.remove(reportId: report.id, reason: reason);
       if (mounted) {
         setState(() => _queues = _loadQueues());
         ScaffoldMessenger.of(context).showSnackBar(
@@ -2478,10 +2472,24 @@ class _MyReportsPageState extends State<MyReportsPage> {
         children: [
           CampusHeader(
             activeItem: 'My Claims',
-            onPostLostItem: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
-            ),
+            onPostLostItem: () async {
+              final submittedReport = await Navigator.push<LostReport>(
+                context,
+                MaterialPageRoute<LostReport>(
+                  builder: (_) => const ReportLostPage(),
+                ),
+              );
+              if (!mounted) return;
+              await _refreshReports();
+              if (submittedReport != null) {
+                setState(() => _showSuccessConfirmation = true);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Lost report submitted successfully.'),
+                  ),
+                );
+              }
+            },
           ),
           Expanded(
             child: FutureBuilder<List<LostReport>>(
