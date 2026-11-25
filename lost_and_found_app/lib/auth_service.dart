@@ -6,6 +6,8 @@ import 'package:flutter/foundation.dart';
 
 import 'local_store.dart';
 
+const Set<String> _preconfiguredStaffEmails = <String>{'staff.one@gmail.com'};
+
 enum UserRole {
   student,
   staff,
@@ -90,17 +92,59 @@ class AuthService {
   static bool get canReview => currentRole?.canReview ?? false;
   static bool get canManageRoles => currentRole?.canManageRoles ?? false;
 
+  static bool isPreconfiguredStaffEmail(String email) =>
+      _preconfiguredStaffEmails.contains(email.trim().toLowerCase());
+
   @visibleForTesting
   static void setCurrentUserForTesting(UserRecord? user) {
     _currentUser = user;
   }
 
-  static Future<List<UserRecord>> _users() async {
+  static Future<List<UserRecord>> _users({bool provisionStaff = true}) async {
     final records = await LocalStore.readRecords(_usersKey);
-    return records.map(UserRecord.fromJson).toList(growable: true);
+    final users = records.map(UserRecord.fromJson).toList(growable: true);
+    if (!provisionStaff) return users;
+
+    var changed = false;
+    for (final email in _preconfiguredStaffEmails) {
+      if (users.any((user) => user.email == email)) continue;
+      users.add(
+        UserRecord(
+          id: LocalStore.createId(),
+          name: 'Preconfigured staff',
+          email: email,
+          passwordSalt: '',
+          passwordHash: '',
+          role: UserRole.staff,
+        ),
+      );
+      changed = true;
+    }
+    if (changed) {
+      await LocalStore.writeRecords(
+        _usersKey,
+        users.map((user) => user.toJson()).toList(),
+      );
+    }
+    return users;
+  }
+
+  static Future<void> initialize() async {
+    await _users();
   }
 
   static Future<bool> hasUsers() async => (await _users()).isNotEmpty;
+
+  static Future<bool> needsStaffPasswordSetup(String email) async {
+    final normalizedEmail = email.trim().toLowerCase();
+    return (await _users()).any(
+      (user) =>
+          user.email == normalizedEmail &&
+          user.role == UserRole.staff &&
+          user.passwordSalt.isEmpty &&
+          user.passwordHash.isEmpty,
+    );
+  }
 
   static Future<UserRecord?> restoreSession() async {
     final userId = await LocalStore.readString(_sessionKey);
@@ -123,19 +167,39 @@ class AuthService {
   ) async {
     final users = await _users();
     final normalizedEmail = email.trim().toLowerCase();
-    if (users.any((user) => user.email == normalizedEmail)) {
-      return 'An account with this email already exists.';
-    }
-    final salt = _makeSalt();
-    final user = UserRecord(
-      id: LocalStore.createId(),
-      name: name.trim(),
-      email: normalizedEmail,
-      passwordSalt: salt,
-      passwordHash: _hash(password, salt),
-      role: UserRole.student,
+    final existingIndex = users.indexWhere(
+      (user) => user.email == normalizedEmail,
     );
-    users.add(user);
+    final salt = _makeSalt();
+    if (existingIndex >= 0) {
+      final existing = users[existingIndex];
+      final isUnclaimedStaff =
+          existing.role == UserRole.staff &&
+          existing.passwordSalt.isEmpty &&
+          existing.passwordHash.isEmpty;
+      if (!isUnclaimedStaff) {
+        return 'An account with this email already exists.';
+      }
+      users[existingIndex] = UserRecord(
+        id: existing.id,
+        name: name.trim(),
+        email: existing.email,
+        passwordSalt: salt,
+        passwordHash: _hash(password, salt),
+        role: UserRole.staff,
+      );
+    } else {
+      users.add(
+        UserRecord(
+          id: LocalStore.createId(),
+          name: name.trim(),
+          email: normalizedEmail,
+          passwordSalt: salt,
+          passwordHash: _hash(password, salt),
+          role: UserRole.student,
+        ),
+      );
+    }
     await LocalStore.writeRecords(
       _usersKey,
       users.map((record) => record.toJson()).toList(),
@@ -149,7 +213,10 @@ class AuthService {
     required String password,
   }) async {
     final users = await _users();
-    if (users.isNotEmpty) {
+    final initializedUsers = users.where(
+      (user) => user.passwordSalt.isNotEmpty || user.passwordHash.isNotEmpty,
+    );
+    if (initializedUsers.isNotEmpty) {
       throw StateError(
         'Initial admin setup is closed because an account already exists.',
       );
@@ -163,7 +230,11 @@ class AuthService {
       passwordHash: _hash(password, salt),
       role: UserRole.admin,
     );
-    await LocalStore.writeRecords(_usersKey, [admin.toJson()]);
+    users.add(admin);
+    await LocalStore.writeRecords(
+      _usersKey,
+      users.map((user) => user.toJson()).toList(),
+    );
     await LocalStore.writeString(_sessionKey, admin.id);
     _currentUser = admin;
     return admin;
@@ -199,35 +270,6 @@ class AuthService {
   static Future<List<UserRecord>> allUsers() async {
     requireAdmin();
     return List<UserRecord>.unmodifiable(await _users());
-  }
-
-  static Future<String?> createStaff(
-    String name,
-    String email,
-    String password,
-  ) async {
-    requireAdmin();
-    final users = await _users();
-    final normalizedEmail = email.trim().toLowerCase();
-    if (users.any((user) => user.email == normalizedEmail)) {
-      return 'An account with this email already exists.';
-    }
-    final salt = _makeSalt();
-    users.add(
-      UserRecord(
-        id: LocalStore.createId(),
-        name: name.trim(),
-        email: normalizedEmail,
-        passwordSalt: salt,
-        passwordHash: _hash(password, salt),
-        role: UserRole.staff,
-      ),
-    );
-    await LocalStore.writeRecords(
-      _usersKey,
-      users.map((user) => user.toJson()).toList(),
-    );
-    return null;
   }
 
   static Future<void> updateRole(String userId, UserRole role) async {

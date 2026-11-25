@@ -20,13 +20,16 @@ samples, guidance on mobile development, and a full API reference.
 
 Roles, accounts, reports, and claims are stored locally with
 `shared_preferences`; no Firebase project or network connection is required.
-Public registration accepts email addresses such as Gmail and always creates
-student accounts. Staff/admin accounts can review reports and claims, while
-only admins can change roles. Admins can create staff accounts from the
-**Manage user roles** page. Unauthorized pages and protected operations show
-**Access denied**. There is no public admin registration screen. This app does
-not currently have a backend, so accounts and roles are local to each
-installation; use a trusted backend before relying on them across a campus.
+Students can register with Gmail or another valid email. Preconfigured staff
+emails are seeded with the Staff role on startup; the staff member creates
+their password through **Create an account** on first use. Add or change
+preconfigured addresses in `lib/auth_service.dart`. Admins can assign roles
+to existing accounts from **Manage user roles**. Staff/admin accounts can
+review reports and claims, while only admins can manage roles. Unauthorized
+pages and protected operations show **Access denied**. There is no public
+admin registration screen. This app does not verify email ownership and has
+no backend, so preconfigured roles and accounts are local to each installation;
+use trusted server-side authentication before relying on them across a campus.
 
 Local data belongs to this browser or app installation and is not shared
 between devices. This is a simple offline/demo setup, not tamper-proof

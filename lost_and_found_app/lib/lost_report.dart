@@ -1693,8 +1693,14 @@ class BrowseItemsPage extends StatefulWidget {
 
 class _BrowseItemsPageState extends State<BrowseItemsPage> {
   final _searchController = TextEditingController();
+  final _locationController = TextEditingController();
+  final _dateController = TextEditingController();
   late Future<List<LostReport>> _listings;
   String _keyword = '';
+  String? _category;
+  DateTime? _date;
+  String _location = '';
+  String _reportType = 'All';
 
   @override
   void initState() {
@@ -1705,19 +1711,68 @@ class _BrowseItemsPageState extends State<BrowseItemsPage> {
   @override
   void dispose() {
     _searchController.dispose();
+    _locationController.dispose();
+    _dateController.dispose();
     super.dispose();
   }
 
   List<LostReport> _matchingListings(List<LostReport> listings) {
     final keyword = _keyword.trim().toLowerCase();
-    if (keyword.isEmpty) return listings;
     return listings
         .where(
           (report) =>
-              report.title.toLowerCase().contains(keyword) ||
-              report.description.toLowerCase().contains(keyword),
+              (keyword.isEmpty ||
+                  report.title.toLowerCase().contains(keyword) ||
+                  report.description.toLowerCase().contains(keyword)) &&
+              (_category == null || report.category == _category) &&
+              (_date == null ||
+                  (report.dateLost.year == _date!.year &&
+                      report.dateLost.month == _date!.month &&
+                      report.dateLost.day == _date!.day)) &&
+              (_location.trim().isEmpty ||
+                  report.location.toLowerCase().contains(
+                    _location.trim().toLowerCase(),
+                  )) &&
+              (_reportType == 'All' || _reportType == 'Lost'),
         )
         .toList(growable: false);
+  }
+
+  bool get _hasActiveFilters =>
+      _keyword.trim().isNotEmpty ||
+      _category != null ||
+      _date != null ||
+      _location.trim().isNotEmpty ||
+      _reportType != 'All';
+
+  void _clearFilters() {
+    setState(() {
+      _searchController.clear();
+      _locationController.clear();
+      _dateController.clear();
+      _keyword = '';
+      _category = null;
+      _date = null;
+      _location = '';
+      _reportType = 'All';
+    });
+  }
+
+  Future<void> _selectDate() async {
+    final today = DateTime.now();
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _date ?? today,
+      firstDate: DateTime(2000),
+      lastDate: today,
+      helpText: 'Filter by date lost',
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _date = selected;
+        _dateController.text = formatReportDate(selected);
+      });
+    }
   }
 
   @override
@@ -1792,14 +1847,119 @@ class _BrowseItemsPageState extends State<BrowseItemsPage> {
                                 setState(() => _keyword = value),
                           ),
                           const SizedBox(height: 16),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final width = constraints.maxWidth > 680
+                                  ? (constraints.maxWidth - 16) / 2
+                                  : constraints.maxWidth;
+                              return Wrap(
+                                spacing: 16,
+                                runSpacing: 12,
+                                children: [
+                                  SizedBox(
+                                    width: width,
+                                    child: DropdownButtonFormField<String>(
+                                      key: const Key('listing-category-filter'),
+                                      initialValue: _category,
+                                      decoration: _fieldDecoration('Category'),
+                                      items: [
+                                        const DropdownMenuItem<String>(
+                                          value: null,
+                                          child: Text('All categories'),
+                                        ),
+                                        for (final category
+                                            in lostReportCategories)
+                                          DropdownMenuItem<String>(
+                                            value: category,
+                                            child: Text(category),
+                                          ),
+                                      ],
+                                      onChanged: (value) =>
+                                          setState(() => _category = value),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: TextField(
+                                      key: const Key('listing-date-filter'),
+                                      controller: _dateController,
+                                      readOnly: true,
+                                      onTap: _selectDate,
+                                      decoration: _fieldDecoration(
+                                        'Date lost',
+                                        hint: 'Any date',
+                                        suffixIcon: const Icon(
+                                          Icons.calendar_today,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: TextField(
+                                      key: const Key('listing-location-filter'),
+                                      controller: _locationController,
+                                      decoration: _fieldDecoration(
+                                        'Location',
+                                        hint: 'Filter by location',
+                                      ),
+                                      onChanged: (value) =>
+                                          setState(() => _location = value),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: DropdownButtonFormField<String>(
+                                      key: const Key('listing-type-filter'),
+                                      initialValue: _reportType,
+                                      decoration: _fieldDecoration('Type'),
+                                      items: const [
+                                        DropdownMenuItem(
+                                          value: 'All',
+                                          child: Text('All types'),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'Lost',
+                                          child: Text('Lost'),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'Found',
+                                          child: Text('Found'),
+                                        ),
+                                      ],
+                                      onChanged: (value) {
+                                        if (value != null) {
+                                          setState(() => _reportType = value);
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          if (_hasActiveFilters) ...[
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton.icon(
+                                key: const Key('listing-clear-filters'),
+                                onPressed: _clearFilters,
+                                icon: const Icon(Icons.clear_all),
+                                label: const Text('Clear all'),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 8),
                           if (listings.isEmpty)
                             Center(
                               child: Padding(
                                 padding: const EdgeInsets.all(24),
                                 child: Text(
-                                  _keyword.trim().isEmpty
+                                  !_hasActiveFilters
                                       ? 'No listings available.'
-                                      : 'No results found.',
+                                      : 'No listings match your search and filters.',
+                                  key: const Key('listing-empty-state'),
                                 ),
                               ),
                             )
@@ -1811,7 +1971,8 @@ class _BrowseItemsPageState extends State<BrowseItemsPage> {
                                   title: Text(report.title),
                                   subtitle: Text(
                                     '${report.description}\n'
-                                    '${report.category} · ${report.location}',
+                                    '${report.category} · ${report.location}\n'
+                                    'Lost · ${formatReportDate(report.dateLost)}',
                                   ),
                                   isThreeLine: true,
                                 ),
@@ -1884,60 +2045,12 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
     }
   }
 
-  Future<void> _createStaff() async {
-    final account = await showDialog<_StaffAccountDraft>(
-      context: context,
-      builder: (_) => const _CreateStaffDialog(),
-    );
-    if (account == null) return;
-
-    try {
-      final error = await AuthService.createStaff(
-        account.name,
-        account.email,
-        account.password,
-      );
-      if (!mounted) return;
-      if (error != null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not create staff account: $error')),
-        );
-        return;
-      }
-      final users = AuthService.allUsers();
-      setState(() {
-        _users = users;
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Staff account created.')));
-    } on StateError catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not create staff account: ${error.message}'),
-          ),
-        );
-      }
-    } on AccessDeniedException {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Access denied')));
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     if (!AuthService.canManageRoles) return const AccessDeniedPage();
 
     return Scaffold(
       appBar: AppBar(title: const Text('Manage user roles')),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _createStaff,
-        icon: const Icon(Icons.person_add_alt_1),
-        label: const Text('Add staff'),
-      ),
       body: FutureBuilder<List<UserRecord>>(
         future: _users,
         builder: (context, snapshot) {
@@ -1986,119 +2099,6 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
           );
         },
       ),
-    );
-  }
-}
-
-class _StaffAccountDraft {
-  const _StaffAccountDraft({
-    required this.name,
-    required this.email,
-    required this.password,
-  });
-
-  final String name;
-  final String email;
-  final String password;
-}
-
-class _CreateStaffDialog extends StatefulWidget {
-  const _CreateStaffDialog();
-
-  @override
-  State<_CreateStaffDialog> createState() => _CreateStaffDialogState();
-}
-
-class _CreateStaffDialogState extends State<_CreateStaffDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _confirmController = TextEditingController();
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _emailController.dispose();
-    _passwordController.dispose();
-    _confirmController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Create staff account'),
-      content: SizedBox(
-        width: 420,
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(labelText: 'Full name'),
-                  validator: (value) => value == null || value.trim().isEmpty
-                      ? 'Enter a name'
-                      : null,
-                ),
-                TextFormField(
-                  controller: _emailController,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(labelText: 'Email'),
-                  validator: (value) {
-                    final email = value?.trim() ?? '';
-                    if (!email.contains('@') || !email.contains('.')) {
-                      return 'Enter a valid email';
-                    }
-                    return null;
-                  },
-                ),
-                TextFormField(
-                  controller: _passwordController,
-                  obscureText: true,
-                  decoration: const InputDecoration(labelText: 'Password'),
-                  validator: (value) => value == null || value.length < 6
-                      ? 'Password must be at least 6 characters'
-                      : null,
-                ),
-                TextFormField(
-                  controller: _confirmController,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Confirm password',
-                  ),
-                  validator: (value) => value != _passwordController.text
-                      ? 'Passwords do not match'
-                      : null,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () {
-            if (!_formKey.currentState!.validate()) return;
-            Navigator.pop(
-              context,
-              _StaffAccountDraft(
-                name: _nameController.text,
-                email: _emailController.text,
-                password: _passwordController.text,
-              ),
-            );
-          },
-          child: const Text('Create staff account'),
-        ),
-      ],
     );
   }
 }

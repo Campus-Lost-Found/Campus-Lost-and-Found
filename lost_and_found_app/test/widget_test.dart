@@ -70,52 +70,45 @@ void main() {
     },
   );
 
-  testWidgets('Admins can create staff accounts from role management', (
-    WidgetTester tester,
-  ) async {
-    SharedPreferencesAsyncPlatform.instance =
-        InMemorySharedPreferencesAsync.empty();
-    AuthService.setCurrentUserForTesting(
-      const UserRecord(
-        id: 'role-admin-uid',
-        name: 'Admin',
-        email: 'role-admin@example.com',
-        passwordSalt: '',
-        passwordHash: '',
-        role: UserRole.admin,
-      ),
-    );
-    addTearDown(() => AuthService.setCurrentUserForTesting(null));
-    tester.view.physicalSize = const Size(900, 800);
-    tester.view.devicePixelRatio = 1;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
+  testWidgets(
+    'Preconfigured staff can set their password through registration',
+    (WidgetTester tester) async {
+      SharedPreferencesAsyncPlatform.instance =
+          InMemorySharedPreferencesAsync.empty();
+      tester.view.physicalSize = const Size(900, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(const MaterialApp(home: RoleManagementPage()));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Add staff'));
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(const MaterialApp(home: LoginPage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Create an account'));
+      await tester.pumpAndSettle();
 
-    final fields = find.byType(TextFormField);
-    await tester.enterText(fields.at(0), 'Staff Member');
-    await tester.enterText(fields.at(1), 'admin@gmail.com');
-    await tester.enterText(fields.at(2), 'staff-test-pass-123');
-    await tester.enterText(fields.at(3), 'staff-test-pass-123');
-    await tester.tap(find.widgetWithText(FilledButton, 'Create staff account'));
-    await tester.pumpAndSettle();
+      final fields = find.byType(TextFormField);
+      await tester.enterText(fields.at(0), 'Staff Member');
+      await tester.enterText(fields.at(1), 'staff.one@gmail.com');
+      await tester.enterText(fields.at(2), 'staff-test-pass-123');
+      await tester.enterText(fields.at(3), 'staff-test-pass-123');
+      expect(
+        find.text(
+          'Staff access is assigned to this email. First-time users can create a password here.',
+        ),
+        findsOneWidget,
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Create account'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('Staff account created.'), findsOneWidget);
-    expect(find.text('admin@gmail.com'), findsOneWidget);
-    final staff = (await AuthService.allUsers()).singleWhere(
-      (user) => user.email == 'admin@gmail.com',
-    );
-    expect(staff.role, UserRole.staff);
-    await AuthService.signOut();
-    expect(
-      (await AuthService.login('admin@gmail.com', 'staff-test-pass-123'))?.role,
-      UserRole.staff,
-    );
-  });
+      expect(find.text('Account created! You can now log in.'), findsOneWidget);
+      expect(
+        (await AuthService.login(
+          'staff.one@gmail.com',
+          'staff-test-pass-123',
+        ))?.role,
+        UserRole.staff,
+      );
+    },
+  );
 
   test(
     'Staff can review local reports and claims but cannot manage roles',
@@ -278,14 +271,6 @@ void main() {
       throwsA(isA<AccessDeniedException>()),
     );
     await expectLater(
-      AuthService.createStaff(
-        'Staff Member',
-        'staff@gmail.com',
-        'test-pass-123',
-      ),
-      throwsA(isA<AccessDeniedException>()),
-    );
-    await expectLater(
       AuthService.allUsers(),
       throwsA(isA<AccessDeniedException>()),
     );
@@ -347,6 +332,54 @@ void main() {
 
     await tester.enterText(search, 'missing item');
     await tester.pumpAndSettle();
-    expect(find.text('No results found.'), findsOneWidget);
+    expect(
+      find.text('No listings match your search and filters.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('listing-clear-filters')));
+    await tester.pumpAndSettle();
+    expect(find.text('Lost Wallet'), findsOneWidget);
+    expect(find.text('Key Ring'), findsOneWidget);
+
+    await tester.enterText(search, 'wallet');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('listing-category-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Accessories').last);
+    await tester.pumpAndSettle();
+    expect(find.text('Lost Wallet'), findsOneWidget);
+    expect(find.text('Key Ring'), findsNothing);
+
+    await tester.enterText(
+      find.byKey(const Key('listing-location-filter')),
+      'library',
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Lost Wallet'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const Key('listing-location-filter')),
+      'cafeteria',
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No listings match your search and filters.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('listing-type-filter')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Found').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No listings match your search and filters.'),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.byKey(const Key('listing-clear-filters')));
+    await tester.pumpAndSettle();
+    expect(find.text('Lost Wallet'), findsOneWidget);
+    expect(find.text('Key Ring'), findsOneWidget);
   });
 }

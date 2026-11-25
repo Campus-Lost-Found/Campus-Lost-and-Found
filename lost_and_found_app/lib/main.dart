@@ -6,6 +6,7 @@ import 'lost_report.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AuthService.initialize();
   final user = await AuthService.restoreSession();
   if (user != null) LostReportSession.signIn(user.email);
   runApp(LostAndFoundApp(isSignedIn: user != null));

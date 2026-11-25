@@ -34,7 +34,16 @@ class _LoginPageState extends State<LoginPage> {
     try {
       final user = await AuthService.login(_emailCtrl.text, _passwordCtrl.text);
       if (user == null) {
-        setState(() => _error = 'Invalid email or password. Please try again.');
+        final needsSetup = await AuthService.needsStaffPasswordSetup(
+          _emailCtrl.text,
+        );
+        if (mounted) {
+          setState(
+            () => _error = needsSetup
+                ? 'Set up this preconfigured staff account using "Create an account".'
+                : 'Invalid email or password. Please try again.',
+          );
+        }
         return;
       }
       LostReportSession.signIn(user.email);
@@ -567,7 +576,7 @@ class _RegisterPageState extends State<RegisterPage> {
                     ),
                     const SizedBox(height: 6),
                     const Text(
-                      'Join the campus community and help items find their way home.',
+                      'Students can register; preconfigured staff can set up their password here.',
                       style: TextStyle(color: Color(0xFF6B7280)),
                     ),
                     const SizedBox(height: 26),
@@ -586,6 +595,7 @@ class _RegisterPageState extends State<RegisterPage> {
                     TextFormField(
                       controller: _emailCtrl,
                       keyboardType: TextInputType.emailAddress,
+                      onChanged: (_) => setState(() {}),
                       decoration: _authFieldDecoration(
                         hint: 'you@cadt.edu.kh',
                         icon: Icons.mail_outline,
@@ -599,6 +609,15 @@ class _RegisterPageState extends State<RegisterPage> {
                         return null;
                       },
                     ),
+                    if (AuthService.isPreconfiguredStaffEmail(
+                      _emailCtrl.text,
+                    )) ...[
+                      const SizedBox(height: 8),
+                      const Text(
+                        'Staff access is assigned to this email. First-time users can create a password here.',
+                        style: TextStyle(color: Color(0xFF2563EB)),
+                      ),
+                    ],
                     const SizedBox(height: 14),
                     TextFormField(
                       controller: _passwordCtrl,
