@@ -1,5 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   runApp(
@@ -81,7 +82,6 @@ class _SearchPageState extends State<SearchPage> {
                 });
               },
             ),
-
             const SizedBox(height: 20),
 
             Expanded(

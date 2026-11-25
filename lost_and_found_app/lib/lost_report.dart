@@ -75,8 +75,46 @@ class LostReportSession {
   static void signOut() => _email = null;
 }
 
+class LostReportAuditRecord {
+  final String id;
+  final String reportId;
+  final String action;
+  final String actorEmail;
+  final String details;
+  final DateTime createdAt;
+
+  const LostReportAuditRecord({
+    required this.id,
+    required this.reportId,
+    required this.action,
+    required this.actorEmail,
+    required this.details,
+    required this.createdAt,
+  });
+
+  factory LostReportAuditRecord.fromJson(Map<String, dynamic> data) =>
+      LostReportAuditRecord(
+        id: data['id'] as String,
+        reportId: data['reportId'] as String,
+        action: data['action'] as String,
+        actorEmail: data['actorEmail'] as String,
+        details: data['details'] as String,
+        createdAt: DateTime.parse(data['createdAt'] as String),
+      );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'reportId': reportId,
+    'action': action,
+    'actorEmail': actorEmail,
+    'details': details,
+    'createdAt': createdAt.toIso8601String(),
+  };
+}
+
 class LostReportRepository {
   static const String _storageKey = 'campus_find_reports';
+  static const String _auditKey = 'campus_find_report_audit';
 
   static Future<List<LostReport>> _reports() async {
     final records = await LocalStore.readRecords(_storageKey);
@@ -90,11 +128,42 @@ class LostReportRepository {
     );
   }
 
+  static Future<List<LostReportAuditRecord>> auditRecords() async {
+    AuthService.requireStaff();
+    final records = await LocalStore.readRecords(_auditKey);
+    return List<LostReportAuditRecord>.unmodifiable(
+      records.map(LostReportAuditRecord.fromJson),
+    );
+  }
+
+  static Future<void> _recordAudit({
+    required String reportId,
+    required String action,
+    required String details,
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final records = await LocalStore.readRecords(_auditKey);
+    records.add(
+      LostReportAuditRecord(
+        id: LocalStore.createId(),
+        reportId: reportId,
+        action: action,
+        actorEmail: user.email,
+        details: details,
+        createdAt: DateTime.now(),
+      ).toJson(),
+    );
+    await LocalStore.writeRecords(_auditKey, records);
+  }
+
   static Future<List<LostReport>> reportsFor(String ownerId) async {
     final reports = await _reports();
-    return List<LostReport>.unmodifiable(
-      reports.where((report) => report.ownerId == ownerId),
-    );
+    final ownedReports = reports
+        .where((report) => report.ownerId == ownerId)
+        .toList();
+    ownedReports.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return List<LostReport>.unmodifiable(ownedReports);
   }
 
   static Future<List<LostReport>> allListings() async =>
@@ -130,6 +199,63 @@ class LostReportRepository {
       createdAt: report.createdAt,
     );
     await _save(reports);
+  }
+
+  static Future<void> edit({
+    required String reportId,
+    required String title,
+    required String description,
+    required String category,
+    required DateTime dateLost,
+    required String location,
+  }) async {
+    AuthService.requireStaff();
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    final edited = LostReport(
+      id: report.id,
+      ownerId: report.ownerId,
+      ownerEmail: report.ownerEmail,
+      title: title.trim(),
+      description: description.trim(),
+      category: category,
+      dateLost: DateTime(dateLost.year, dateLost.month, dateLost.day),
+      location: location.trim(),
+      status: report.status,
+      createdAt: report.createdAt,
+    );
+    reports[index] = edited;
+    await _save(reports);
+    await _recordAudit(
+      reportId: reportId,
+      action: 'Edited',
+      details: 'Report details updated by staff.',
+    );
+  }
+
+  static Future<void> remove({
+    required String reportId,
+    required String reason,
+  }) async {
+    AuthService.requireStaff();
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    reports.removeAt(index);
+    await _save(reports);
+    await _recordAudit(
+      reportId: reportId,
+      action: 'Removed',
+      details: 'Reason: ${reason.trim().isEmpty ? 'No reason provided' : reason.trim()} '
+          'Title: ${report.title}',
+    );
   }
 
   static Future<LostReport> add({
@@ -712,7 +838,7 @@ class _ReportLostPageState extends State<ReportLostPage> {
     if (!(_stepKeys[3].currentState?.validate() ?? false)) return;
 
     try {
-      await LostReportRepository.add(
+      final report = await LostReportRepository.add(
         title: _titleCtrl.text,
         description: _descriptionCtrl.text,
         category: _category!,
@@ -720,13 +846,7 @@ class _ReportLostPageState extends State<ReportLostPage> {
         location: _locationCtrl.text,
       );
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Lost report saved as Open.')),
-      );
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
-      );
+      Navigator.pop(context, report);
     } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1541,6 +1661,175 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
     }
   }
 
+  Future<void> _editReport(LostReport report) async {
+    final titleController = TextEditingController(text: report.title);
+    final descriptionController = TextEditingController(
+      text: report.description,
+    );
+    final locationController = TextEditingController(text: report.location);
+    String category = report.category;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Edit report'),
+        content: SingleChildScrollView(
+          child: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  key: const Key('edit_report_title'),
+                  controller: titleController,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('edit_report_description'),
+                  controller: descriptionController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Description'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: lostReportCategories.contains(category)
+                      ? category
+                      : 'Other',
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: lostReportCategories
+                      .map(
+                        (value) => DropdownMenuItem(
+                          value: value,
+                          child: Text(value),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) category = value;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('edit_report_location'),
+                  controller: locationController,
+                  decoration: const InputDecoration(labelText: 'Location'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Save changes'),
+          ),
+        ],
+      ),
+    );
+
+    final editedTitle = titleController.text;
+    final editedDescription = descriptionController.text;
+    final editedLocation = locationController.text;
+    titleController.dispose();
+    descriptionController.dispose();
+    locationController.dispose();
+    if (confirmed != true) return;
+
+    try {
+      await LostReportRepository.edit(
+        reportId: report.id,
+        title: editedTitle,
+        description: editedDescription,
+        category: category,
+        dateLost: report.dateLost,
+        location: editedLocation,
+      );
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not edit report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _removeReport(LostReport report) async {
+    final reasonController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove report?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('This will remove "${report.title}" from listings.'),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('remove_report_reason'),
+              controller: reasonController,
+              decoration: const InputDecoration(
+                labelText: 'Reason (optional)',
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('confirm_remove_report'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    final reason = reasonController.text;
+    reasonController.dispose();
+    if (confirmed != true) return;
+
+    try {
+      await LostReportRepository.remove(
+        reportId: report.id,
+        reason: reason,
+      );
+      if (mounted) {
+        setState(() => _queues = _loadQueues());
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Report removed and recorded.')),
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not remove report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
   Future<void> _updateClaim(String id, String status) async {
     try {
       await LostReportClaimRepository.review(id, status);
@@ -1605,13 +1894,24 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
                                 subtitle: Text(
                                   '${report.category} · ${report.location}\n'
                                   '${report.description}\n'
-                                  'Reported by ${report.ownerEmail}',
+                                  'Reported by ${report.ownerEmail}\n'
+                                  'Lost: ${formatReportDate(report.dateLost)} · '
+                                  'Submitted: ${formatReportDate(report.createdAt)} · '
+                                  'ID: ${report.id}',
                                 ),
-                                isThreeLine: true,
+                                isThreeLine: false,
                                 trailing: PopupMenuButton<String>(
-                                  tooltip: 'Update review status',
-                                  onSelected: (status) =>
-                                      _updateReport(report.id, status),
+                                  key: Key('report_actions_${report.id}'),
+                                  tooltip: 'Report actions',
+                                  onSelected: (action) {
+                                    if (action == 'Edit') {
+                                      _editReport(report);
+                                    } else if (action == 'Remove') {
+                                      _removeReport(report);
+                                    } else {
+                                      _updateReport(report.id, action);
+                                    }
+                                  },
                                   itemBuilder: (_) => const [
                                     PopupMenuItem(
                                       value: 'Under Review',
@@ -1624,6 +1924,15 @@ class _StaffReviewPageState extends State<StaffReviewPage> {
                                     PopupMenuItem(
                                       value: 'Rejected',
                                       child: Text('Reject'),
+                                    ),
+                                    PopupMenuDivider(),
+                                    PopupMenuItem(
+                                      value: 'Edit',
+                                      child: Text('Edit report'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Remove',
+                                      child: Text('Remove report'),
                                     ),
                                   ],
                                   child: Chip(label: Text(report.status)),
@@ -2104,7 +2413,9 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
 }
 
 class MyReportsPage extends StatefulWidget {
-  const MyReportsPage({super.key});
+  const MyReportsPage({super.key, this.newReport});
+
+  final LostReport? newReport;
 
   @override
   State<MyReportsPage> createState() => _MyReportsPageState();
@@ -2112,14 +2423,37 @@ class MyReportsPage extends StatefulWidget {
 
 class _MyReportsPageState extends State<MyReportsPage> {
   late Future<List<LostReport>> _reports;
+  late bool _showSuccessConfirmation;
 
   @override
   void initState() {
     super.initState();
+    _showSuccessConfirmation = widget.newReport != null;
     final user = AuthService.currentUser;
-    _reports = user == null
-        ? Future.value(const <LostReport>[])
-        : LostReportRepository.reportsFor(user.id);
+    _reports = _loadReports(user?.id);
+  }
+
+  Future<List<LostReport>> _loadReports(String? ownerId) async {
+    if (ownerId == null) return const <LostReport>[];
+
+    final reports = await LostReportRepository.reportsFor(ownerId);
+    final newReport = widget.newReport;
+    if (newReport == null || newReport.ownerId != ownerId) {
+      return reports;
+    }
+
+    final withNewReport = reports
+        .where((report) => report.id != newReport.id)
+        .toList();
+    withNewReport.insert(0, newReport);
+    return List<LostReport>.unmodifiable(withNewReport);
+  }
+
+  Future<void> _refreshReports() async {
+    final user = AuthService.currentUser;
+    setState(() {
+      _reports = _loadReports(user?.id);
+    });
   }
 
   @override
@@ -2147,10 +2481,6 @@ class _MyReportsPageState extends State<MyReportsPage> {
             onPostLostItem: () => Navigator.push(
               context,
               MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
-            ),
-            onBrowseItems: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(builder: (_) => const BrowseItemsPage()),
             ),
           ),
           Expanded(
@@ -2187,6 +2517,41 @@ class _MyReportsPageState extends State<MyReportsPage> {
                             'Track every lost item you have reported.',
                             style: TextStyle(fontSize: 13, color: _muted),
                           ),
+                          if (_showSuccessConfirmation) ...[
+                            const SizedBox(height: 16),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFECFDF3),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFABEFC6),
+                                ),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_outline,
+                                    color: _success,
+                                  ),
+                                  SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Lost report submitted successfully.',
+                                      style: TextStyle(
+                                        color: Color(0xFF067647),
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                           if (AuthService.canReview ||
                               AuthService.canManageRoles) ...[
                             const SizedBox(height: 16),

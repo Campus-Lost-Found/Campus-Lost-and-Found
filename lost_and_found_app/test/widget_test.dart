@@ -149,13 +149,45 @@ void main() {
 
       await LostReportRepository.review(report.id, 'Resolved');
       await LostReportClaimRepository.review(claim.id, 'Approved');
+      await LostReportRepository.edit(
+        reportId: report.id,
+        title: 'Updated Notebook',
+        description: 'Updated blue notebook',
+        category: 'Other',
+        dateLost: DateTime(2026, 1, 1),
+        location: 'Main Library',
+      );
       expect(
         (await LostReportRepository.allForStaffReview()).single.status,
         'Resolved',
       );
+      final edited = (await LostReportRepository.allForStaffReview()).single;
+      expect(edited.title, 'Updated Notebook');
+      expect(edited.location, 'Main Library');
       expect(
         (await LostReportClaimRepository.allForStaffReview()).single.status,
         'Approved',
+      );
+      await LostReportRepository.remove(
+        reportId: report.id,
+        reason: 'Duplicate listing',
+      );
+      expect(await LostReportRepository.allForStaffReview(), isEmpty);
+      final audit = await LostReportRepository.auditRecords();
+      expect(
+        audit.any(
+          (record) => record.reportId == report.id && record.action == 'Edited',
+        ),
+        true,
+      );
+      expect(
+        audit.any(
+          (record) =>
+              record.reportId == report.id &&
+              record.action == 'Removed' &&
+              record.details.contains('Duplicate listing'),
+        ),
+        true,
       );
       await expectLater(
         AuthService.updateRole('student-uid', UserRole.staff),
@@ -163,6 +195,78 @@ void main() {
       );
     },
   );
+
+  test('Newest lost report appears first in the owner report list', () async {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    AuthService.setCurrentUserForTesting(
+      const UserRecord(
+        id: 'student-uid',
+        name: 'Student',
+        email: 'student@cadt.edu.kh',
+        passwordSalt: '',
+        passwordHash: '',
+        role: UserRole.student,
+      ),
+    );
+    addTearDown(() => AuthService.setCurrentUserForTesting(null));
+
+    final older = await LostReportRepository.add(
+      title: 'Older report',
+      description: 'Description',
+      category: 'Other',
+      dateLost: DateTime(2026, 1, 1),
+      location: 'Library',
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 2));
+    final newest = await LostReportRepository.add(
+      title: 'Newest report',
+      description: 'Description',
+      category: 'Other',
+      dateLost: DateTime(2026, 1, 2),
+      location: 'Cafe',
+    );
+
+    final reports = await LostReportRepository.reportsFor('student-uid');
+    expect(reports.map((report) => report.id), [newest.id, older.id]);
+  });
+
+  testWidgets('My reports shows success confirmation after creation', (
+    WidgetTester tester,
+  ) async {
+    SharedPreferencesAsyncPlatform.instance =
+        InMemorySharedPreferencesAsync.empty();
+    AuthService.setCurrentUserForTesting(
+      const UserRecord(
+        id: 'student-uid',
+        name: 'Student',
+        email: 'student@cadt.edu.kh',
+        passwordSalt: '',
+        passwordHash: '',
+        role: UserRole.student,
+      ),
+    );
+    LostReportSession.signIn('student@cadt.edu.kh');
+    addTearDown(() {
+      AuthService.setCurrentUserForTesting(null);
+      LostReportSession.signOut();
+    });
+
+    final report = await LostReportRepository.add(
+      title: 'Black backpack',
+      description: 'Black backpack with a laptop compartment.',
+      category: 'Backpack',
+      dateLost: DateTime(2026, 1, 2),
+      location: 'Library',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(home: MyReportsPage(newReport: report)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Lost report submitted successfully.'), findsOneWidget);
+  });
 
   testWidgets('Login UI renders', (WidgetTester tester) async {
     tester.view.physicalSize = const Size(900, 800);
