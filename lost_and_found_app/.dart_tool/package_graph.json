@@ -7,8 +7,10 @@
       "name": "lost_and_found_app",
       "version": "1.0.0+1",
       "dependencies": [
+        "crypto",
         "cupertino_icons",
-        "flutter"
+        "flutter",
+        "material_ui"
       ],
       "devDependencies": [
         "flutter_lints",
@@ -39,6 +41,11 @@
         "test_api",
         "vector_math"
       ]
+    },
+    {
+      "name": "crypto",
+      "version": "3.0.8",
+      "dependencies": []
     },
     {
       "name": "cupertino_icons",
@@ -90,6 +97,11 @@
         "matcher",
         "meta"
       ]
+    },
+    {
+      "name": "vector_math",
+      "version": "2.4.4",
+      "dependencies": []
     },
     {
       "name": "stack_trace",
@@ -229,9 +241,45 @@
       "dependencies": []
     },
     {
-      "name": "vector_math",
-      "version": "2.4.4",
-      "dependencies": []
+      "name": "material_ui",
+      "version": "1.11.1",
+      "dependencies": [
+        "collection",
+        "cupertino_ui",
+        "flutter",
+        "flutter_localizations",
+        "intl",
+        "material_color_utilities",
+        "vector_math"
+      ]
+    },
+    {
+      "name": "flutter_localizations",
+      "version": "0.0.0",
+      "dependencies": [
+        "flutter",
+        "intl",
+        "path"
+      ]
+    },
+    {
+      "name": "intl",
+      "version": "0.20.3",
+      "dependencies": [
+        "clock",
+        "meta",
+        "path"
+      ]
+    },
+    {
+      "name": "cupertino_ui",
+      "version": "1.1.7",
+      "dependencies": [
+        "collection",
+        "flutter",
+        "flutter_localizations",
+        "intl"
+      ]
     }
   ],
   "configVersion": 1
