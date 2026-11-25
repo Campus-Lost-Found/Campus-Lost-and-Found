@@ -297,7 +297,7 @@ class _LoginFormPanel extends StatelessWidget {
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.next,
                   decoration: _authFieldDecoration(
-                    hint: 'you@cadt.edu.kh',
+                    hint: 'name@gmail.com',
                     icon: Icons.mail_outline,
                   ),
                   validator: (v) {
@@ -439,15 +439,6 @@ class _LoginFormPanel extends StatelessWidget {
                       child: const Text('Create an account'),
                     ),
                   ],
-                ),
-                Center(
-                  child: TextButton(
-                    onPressed: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (_) => const AdminSetupPage()),
-                    ),
-                    child: const Text('Set up the first administrator'),
-                  ),
                 ),
               ],
             ),
@@ -683,135 +674,6 @@ class _RegisterPageState extends State<RegisterPage> {
                     ),
                   ],
                 ),
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class AdminSetupPage extends StatefulWidget {
-  const AdminSetupPage({super.key});
-
-  @override
-  State<AdminSetupPage> createState() => _AdminSetupPageState();
-}
-
-class _AdminSetupPageState extends State<AdminSetupPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameCtrl = TextEditingController();
-  final _emailCtrl = TextEditingController();
-  final _passwordCtrl = TextEditingController();
-  final _confirmCtrl = TextEditingController();
-  String? _error;
-
-  @override
-  void dispose() {
-    _nameCtrl.dispose();
-    _emailCtrl.dispose();
-    _passwordCtrl.dispose();
-    _confirmCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-    try {
-      final admin = await AuthService.bootstrapAdmin(
-        name: _nameCtrl.text,
-        email: _emailCtrl.text,
-        password: _passwordCtrl.text,
-      );
-      LostReportSession.signIn(admin.email);
-      if (!mounted) return;
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
-        (_) => false,
-      );
-    } on StateError catch (error) {
-      if (mounted) setState(() => _error = error.message.toString());
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF7F8FA),
-      appBar: AppBar(
-        backgroundColor: Colors.white,
-        title: const Text('Initial admin setup'),
-      ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 480),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const Text(
-                    'Create the first administrator',
-                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Do this once on a trusted device before students create '
-                    'accounts.',
-                  ),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    controller: _nameCtrl,
-                    decoration: const InputDecoration(labelText: 'Full name'),
-                    validator: (value) => value == null || value.trim().isEmpty
-                        ? 'Enter your name'
-                        : null,
-                  ),
-                  TextFormField(
-                    controller: _emailCtrl,
-                    keyboardType: TextInputType.emailAddress,
-                    decoration: const InputDecoration(labelText: 'Email'),
-                    validator: (value) => value == null || !value.contains('@')
-                        ? 'Enter a valid email'
-                        : null,
-                  ),
-                  TextFormField(
-                    controller: _passwordCtrl,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Password (min 6 characters)',
-                    ),
-                    validator: (value) => value == null || value.length < 6
-                        ? 'Password must be at least 6 characters'
-                        : null,
-                  ),
-                  TextFormField(
-                    controller: _confirmCtrl,
-                    obscureText: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Confirm password',
-                    ),
-                    validator: (value) => value != _passwordCtrl.text
-                        ? 'Passwords do not match'
-                        : null,
-                  ),
-                  if (_error != null) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      _error!,
-                      style: const TextStyle(color: Color(0xFFBE123C)),
-                    ),
-                  ],
-                  const SizedBox(height: 20),
-                  FilledButton(
-                    onPressed: _submit,
-                    child: const Text('Create administrator'),
-                  ),
-                ],
               ),
             ),
           ),

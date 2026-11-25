@@ -97,6 +97,9 @@ class LostReportRepository {
     );
   }
 
+  static Future<List<LostReport>> allListings() async =>
+      List<LostReport>.unmodifiable(await _reports());
+
   static Future<List<LostReport>> allForStaffReview() async {
     AuthService.requireStaff();
     return List<LostReport>.unmodifiable(await _reports());
@@ -394,10 +397,12 @@ class CampusHeader extends StatelessWidget {
     super.key,
     required this.activeItem,
     this.onPostLostItem,
+    this.onBrowseItems,
   });
 
   final String activeItem;
   final VoidCallback? onPostLostItem;
+  final VoidCallback? onBrowseItems;
 
   @override
   Widget build(BuildContext context) {
@@ -516,6 +521,8 @@ class CampusHeader extends StatelessWidget {
       child: TextButton(
         onPressed: active
             ? () {}
+            : label == 'Browse Items' && onBrowseItems != null
+            ? onBrowseItems
             : () => ScaffoldMessenger.of(
                 context,
               ).showSnackBar(SnackBar(content: Text('$label is coming soon.'))),
@@ -767,6 +774,10 @@ class _ReportLostPageState extends State<ReportLostPage> {
               0,
               duration: const Duration(milliseconds: 250),
               curve: Curves.easeOut,
+            ),
+            onBrowseItems: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const BrowseItemsPage()),
             ),
           ),
           Expanded(
@@ -1673,6 +1684,154 @@ class _ReviewQueues {
   final List<LostReportClaim> claims;
 }
 
+class BrowseItemsPage extends StatefulWidget {
+  const BrowseItemsPage({super.key});
+
+  @override
+  State<BrowseItemsPage> createState() => _BrowseItemsPageState();
+}
+
+class _BrowseItemsPageState extends State<BrowseItemsPage> {
+  final _searchController = TextEditingController();
+  late Future<List<LostReport>> _listings;
+  String _keyword = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _listings = LostReportRepository.allListings();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  List<LostReport> _matchingListings(List<LostReport> listings) {
+    final keyword = _keyword.trim().toLowerCase();
+    if (keyword.isEmpty) return listings;
+    return listings
+        .where(
+          (report) =>
+              report.title.toLowerCase().contains(keyword) ||
+              report.description.toLowerCase().contains(keyword),
+        )
+        .toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (AuthService.currentUser == null || LostReportSession.email == null) {
+      return Scaffold(
+        backgroundColor: _canvas,
+        body: Column(
+          children: [
+            const CampusHeader(activeItem: 'Browse Items'),
+            const Expanded(
+              child: Center(child: Text('Please log in to browse listings.')),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: _canvas,
+      body: Column(
+        children: [
+          CampusHeader(
+            activeItem: 'Browse Items',
+            onPostLostItem: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
+            ),
+          ),
+          Expanded(
+            child: FutureBuilder<List<LostReport>>(
+              future: _listings,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Could not load listings: ${snapshot.error}'),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final listings = _matchingListings(snapshot.data!);
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1000),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'Browse lost items',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('listing-search'),
+                            controller: _searchController,
+                            decoration: _fieldDecoration(
+                              'Search listings',
+                              hint: 'Search by title or description',
+                              suffixIcon: const Icon(Icons.search),
+                            ),
+                            textInputAction: TextInputAction.search,
+                            onChanged: (value) =>
+                                setState(() => _keyword = value),
+                            onSubmitted: (value) =>
+                                setState(() => _keyword = value),
+                          ),
+                          const SizedBox(height: 16),
+                          if (listings.isEmpty)
+                            Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Text(
+                                  _keyword.trim().isEmpty
+                                      ? 'No listings available.'
+                                      : 'No results found.',
+                                ),
+                              ),
+                            )
+                          else
+                            for (final report in listings) ...[
+                              Card(
+                                color: Colors.white,
+                                child: ListTile(
+                                  title: Text(report.title),
+                                  subtitle: Text(
+                                    '${report.description}\n'
+                                    '${report.category} · ${report.location}',
+                                  ),
+                                  isThreeLine: true,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _EmptyReviewQueue extends StatelessWidget {
   const _EmptyReviewQueue({required this.label});
 
@@ -1705,11 +1864,59 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
   Future<void> _updateRole(String userId, UserRole role) async {
     try {
       await AuthService.updateRole(userId, role);
-      if (mounted) setState(() => _users = AuthService.allUsers());
+      if (mounted) {
+        final users = AuthService.allUsers();
+        setState(() {
+          _users = users;
+        });
+      }
     } on StateError catch (error) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Could not update role: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _createStaff() async {
+    final account = await showDialog<_StaffAccountDraft>(
+      context: context,
+      builder: (_) => const _CreateStaffDialog(),
+    );
+    if (account == null) return;
+
+    try {
+      final error = await AuthService.createStaff(
+        account.name,
+        account.email,
+        account.password,
+      );
+      if (!mounted) return;
+      if (error != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create staff account: $error')),
+        );
+        return;
+      }
+      final users = AuthService.allUsers();
+      setState(() {
+        _users = users;
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Staff account created.')));
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not create staff account: ${error.message}'),
+          ),
         );
       }
     } on AccessDeniedException {
@@ -1726,6 +1933,11 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Manage user roles')),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _createStaff,
+        icon: const Icon(Icons.person_add_alt_1),
+        label: const Text('Add staff'),
+      ),
       body: FutureBuilder<List<UserRecord>>(
         future: _users,
         builder: (context, snapshot) {
@@ -1778,6 +1990,119 @@ class _RoleManagementPageState extends State<RoleManagementPage> {
   }
 }
 
+class _StaffAccountDraft {
+  const _StaffAccountDraft({
+    required this.name,
+    required this.email,
+    required this.password,
+  });
+
+  final String name;
+  final String email;
+  final String password;
+}
+
+class _CreateStaffDialog extends StatefulWidget {
+  const _CreateStaffDialog();
+
+  @override
+  State<_CreateStaffDialog> createState() => _CreateStaffDialogState();
+}
+
+class _CreateStaffDialogState extends State<_CreateStaffDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _emailController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _confirmController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Create staff account'),
+      content: SizedBox(
+        width: 420,
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: _nameController,
+                  decoration: const InputDecoration(labelText: 'Full name'),
+                  validator: (value) => value == null || value.trim().isEmpty
+                      ? 'Enter a name'
+                      : null,
+                ),
+                TextFormField(
+                  controller: _emailController,
+                  keyboardType: TextInputType.emailAddress,
+                  decoration: const InputDecoration(labelText: 'Email'),
+                  validator: (value) {
+                    final email = value?.trim() ?? '';
+                    if (!email.contains('@') || !email.contains('.')) {
+                      return 'Enter a valid email';
+                    }
+                    return null;
+                  },
+                ),
+                TextFormField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: const InputDecoration(labelText: 'Password'),
+                  validator: (value) => value == null || value.length < 6
+                      ? 'Password must be at least 6 characters'
+                      : null,
+                ),
+                TextFormField(
+                  controller: _confirmController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm password',
+                  ),
+                  validator: (value) => value != _passwordController.text
+                      ? 'Passwords do not match'
+                      : null,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) return;
+            Navigator.pop(
+              context,
+              _StaffAccountDraft(
+                name: _nameController.text,
+                email: _emailController.text,
+                password: _passwordController.text,
+              ),
+            );
+          },
+          child: const Text('Create staff account'),
+        ),
+      ],
+    );
+  }
+}
+
 class MyReportsPage extends StatefulWidget {
   const MyReportsPage({super.key});
 
@@ -1822,6 +2147,10 @@ class _MyReportsPageState extends State<MyReportsPage> {
             onPostLostItem: () => Navigator.push(
               context,
               MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
+            ),
+            onBrowseItems: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const BrowseItemsPage()),
             ),
           ),
           Expanded(

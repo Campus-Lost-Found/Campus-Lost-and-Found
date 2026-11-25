@@ -201,6 +201,35 @@ class AuthService {
     return List<UserRecord>.unmodifiable(await _users());
   }
 
+  static Future<String?> createStaff(
+    String name,
+    String email,
+    String password,
+  ) async {
+    requireAdmin();
+    final users = await _users();
+    final normalizedEmail = email.trim().toLowerCase();
+    if (users.any((user) => user.email == normalizedEmail)) {
+      return 'An account with this email already exists.';
+    }
+    final salt = _makeSalt();
+    users.add(
+      UserRecord(
+        id: LocalStore.createId(),
+        name: name.trim(),
+        email: normalizedEmail,
+        passwordSalt: salt,
+        passwordHash: _hash(password, salt),
+        role: UserRole.staff,
+      ),
+    );
+    await LocalStore.writeRecords(
+      _usersKey,
+      users.map((user) => user.toJson()).toList(),
+    );
+    return null;
+  }
+
   static Future<void> updateRole(String userId, UserRole role) async {
     requireAdmin();
     final users = await _users();
