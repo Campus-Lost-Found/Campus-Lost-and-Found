@@ -1,7 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:lost_and_found_app/upload_pic.dart';
 
 const Color _blue = Color(0xFF2563EB);
 const Color _lightBlue = Color(0xFFEFF6FF);
@@ -517,27 +517,18 @@ class _ReportLostPageState extends State<ReportLostPage> {
     _stepKeys[1].currentState?.validate();
   }
 
-  Future<void> _pickPhoto() async {
-    final picked = await ImagePicker().pickImage(source: ImageSource.gallery);
-    if (picked == null) return;
-
-    final bytes = await picked.readAsBytes();
-    final error = validatePhoto(picked.name, bytes.length);
-    if (error != null) {
-      _showMessage(error);
-      return;
-    }
+  Future<void> _openUploadPic() async {
+    final uploaded = await Navigator.of(context).push<UploadedPhoto>(
+      MaterialPageRoute<UploadedPhoto>(
+        builder: (_) => const UploadPicPage(),
+      ),
+    );
+    if (uploaded == null || !mounted) return;
 
     setState(() {
-      _photoBytes = bytes;
-      _photoName = picked.name;
+      _photoBytes = uploaded.bytes;
+      _photoName = uploaded.name;
     });
-  }
-
-  void _showMessage(String message) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   void _selectCategory(String value) {
@@ -1209,7 +1200,7 @@ class _ReportLostPageState extends State<ReportLostPage> {
                   ),
                   const SizedBox(height: 14),
                   FilledButton.tonalIcon(
-                    onPressed: _pickPhoto,
+                    onPressed: _openUploadPic,
                     icon: const Icon(Icons.upload, size: 18),
                     label: Text(
                       _photoBytes == null ? 'Choose image' : 'Replace image',
