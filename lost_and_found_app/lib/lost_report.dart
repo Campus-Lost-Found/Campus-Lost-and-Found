@@ -1,4 +1,8 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:material_ui/material_ui.dart';
+import 'package:lost_and_found_app/upload_pic.dart';
 
 import 'auth_service.dart';
 import 'local_store.dart';
@@ -22,6 +26,8 @@ class LostReport {
   final String location;
   final String status;
   final DateTime createdAt;
+  final Uint8List? photoBytes;
+  final String? photoName;
 
   const LostReport({
     required this.id,
@@ -34,6 +40,8 @@ class LostReport {
     required this.location,
     required this.status,
     required this.createdAt,
+    this.photoBytes,
+    this.photoName,
   });
 
   factory LostReport.fromJson(Map<String, dynamic> data) {
@@ -48,6 +56,10 @@ class LostReport {
       location: data['location'] as String,
       status: data['status'] as String,
       createdAt: DateTime.parse(data['createdAt'] as String),
+      photoBytes: data['photoBytes'] == null
+          ? null
+          : base64Decode(data['photoBytes'] as String),
+      photoName: data['photoName'] as String?,
     );
   }
 
@@ -62,6 +74,8 @@ class LostReport {
     'location': location,
     'status': status,
     'createdAt': createdAt.toIso8601String(),
+    'photoBytes': photoBytes == null ? null : base64Encode(photoBytes!),
+    'photoName': photoName,
   };
 }
 
@@ -197,6 +211,8 @@ class LostReportRepository {
       location: report.location,
       status: status,
       createdAt: report.createdAt,
+      photoBytes: report.photoBytes,
+      photoName: report.photoName,
     );
     await _save(reports);
   }
@@ -227,6 +243,8 @@ class LostReportRepository {
       location: location.trim(),
       status: report.status,
       createdAt: report.createdAt,
+      photoBytes: report.photoBytes,
+      photoName: report.photoName,
     );
     reports[index] = edited;
     await _save(reports);
@@ -265,6 +283,8 @@ class LostReportRepository {
     required String category,
     required DateTime dateLost,
     required String location,
+    Uint8List? photoBytes,
+    String? photoName,
   }) async {
     final user = AuthService.currentUser;
     if (user == null) throw const AccessDeniedException();
@@ -280,6 +300,8 @@ class LostReportRepository {
       location: location.trim(),
       status: 'Open',
       createdAt: now,
+      photoBytes: photoBytes,
+      photoName: photoName,
     );
     final reports = await _reports();
     reports.add(report);
@@ -758,6 +780,8 @@ class _ReportLostPageState extends State<ReportLostPage> {
   String? _category;
   String? _categoryError;
   String? _color;
+  Uint8List? _photoBytes;
+  String? _photoName;
   bool _confirmed = false;
   int _currentStep = 0;
 
@@ -785,6 +809,20 @@ class _ReportLostPageState extends State<ReportLostPage> {
     if (!context.mounted || picked == null) return;
     setState(() => _dateCtrl.text = formatReportDate(picked));
     _stepKeys[1].currentState?.validate();
+  }
+
+  Future<void> _openUploadPic() async {
+    final uploaded = await Navigator.of(context).push<UploadedPhoto>(
+      MaterialPageRoute<UploadedPhoto>(
+        builder: (_) => const UploadPicPage(),
+      ),
+    );
+    if (uploaded == null || !mounted) return;
+
+    setState(() {
+      _photoBytes = uploaded.bytes;
+      _photoName = uploaded.name;
+    });
   }
 
   void _selectCategory(String value) {
@@ -845,6 +883,8 @@ class _ReportLostPageState extends State<ReportLostPage> {
         category: _category!,
         dateLost: DateTime.parse(_dateCtrl.text.trim()),
         location: _locationCtrl.text,
+        photoBytes: _photoBytes,
+        photoName: _photoName,
       );
       if (!mounted) return;
       Navigator.pop(context, report);
@@ -1401,13 +1441,13 @@ class _ReportLostPageState extends State<ReportLostPage> {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Optional for now, but photos help the match engine verify ownership.',
+              'Optional, but photos make the item easier to recognize.',
               style: TextStyle(fontSize: 13, color: _muted),
             ),
             const SizedBox(height: 20),
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(28),
+              padding: const EdgeInsets.all(20),
               decoration: BoxDecoration(
                 color: const Color(0xFFFAFAFA),
                 borderRadius: BorderRadius.circular(12),
@@ -1415,20 +1455,60 @@ class _ReportLostPageState extends State<ReportLostPage> {
               ),
               child: Column(
                 children: [
-                  Icon(Icons.add_photo_alternate, size: 40, color: _blue),
-                  const SizedBox(height: 12),
-                  const Text(
-                    'Add a photo',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
+                  if (_photoBytes != null) ...[
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.memory(
+                        _photoBytes!,
+                        width: double.infinity,
+                        height: 220,
+                        fit: BoxFit.cover,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 4),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _photoName ?? 'Selected photo',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12, color: _ink),
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => setState(() {
+                            _photoBytes = null;
+                            _photoName = null;
+                          }),
+                          icon: const Icon(Icons.delete_outline, size: 18),
+                          label: const Text('Remove'),
+                        ),
+                      ],
+                    ),
+                  ] else ...[
+                    Icon(Icons.add_photo_alternate, size: 40, color: _blue),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Add a photo',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: _ink,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 6),
                   const Text(
-                    'Photo upload can be enabled in the next release.',
+                    'Optional · JPG, PNG or WEBP up to 5 MB',
                     style: TextStyle(fontSize: 12, color: _muted),
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.tonalIcon(
+                    onPressed: _openUploadPic,
+                    icon: const Icon(Icons.upload, size: 18),
+                    label: Text(
+                      _photoBytes == null ? 'Choose image' : 'Replace image',
+                    ),
                   ),
                 ],
               ),
@@ -1476,6 +1556,7 @@ class _ReportLostPageState extends State<ReportLostPage> {
                   _summaryRow('Category', _category ?? '-'),
                   _summaryRow('Date lost', _dateCtrl.text),
                   _summaryRow('Location', _locationCtrl.text),
+                  _summaryRow('Photo', _photoName ?? '-'),
                   _summaryRow('Status', 'Open'),
                 ],
               ),
@@ -2697,6 +2778,19 @@ class _MyReportsPageState extends State<MyReportsPage> {
             report.description,
             style: const TextStyle(fontSize: 13, color: _ink),
           ),
+          if (report.photoBytes != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: const [
+                Icon(Icons.photo_camera, size: 16, color: _blue),
+                SizedBox(width: 6),
+                Text(
+                  'Photo attached',
+                  style: TextStyle(fontSize: 12, color: _blue),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
