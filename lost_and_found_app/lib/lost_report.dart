@@ -1,7 +1,11 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:lost_and_found_app/upload_pic.dart';
+
+import 'auth_service.dart';
+import 'local_store.dart';
 
 const Color _blue = Color(0xFF2563EB);
 const Color _lightBlue = Color(0xFFEFF6FF);
@@ -11,16 +15,9 @@ const Color _border = Color(0xFFE5E7EB);
 const Color _canvas = Color(0xFFF5F7FA);
 const Color _success = Color(0xFF16A34A);
 
-const int _maxPhotoBytes = 5 * 1024 * 1024;
-const List<String> _allowedPhotoExtensions = <String>[
-  'jpg',
-  'jpeg',
-  'png',
-  'webp',
-];
-
 class LostReport {
   final String id;
+  final String ownerId;
   final String ownerEmail;
   final String title;
   final String description;
@@ -34,6 +31,7 @@ class LostReport {
 
   const LostReport({
     required this.id,
+    required this.ownerId,
     required this.ownerEmail,
     required this.title,
     required this.description,
@@ -45,6 +43,40 @@ class LostReport {
     this.photoBytes,
     this.photoName,
   });
+
+  factory LostReport.fromJson(Map<String, dynamic> data) {
+    return LostReport(
+      id: data['id'] as String,
+      ownerId: data['ownerId'] as String,
+      ownerEmail: data['ownerEmail'] as String,
+      title: data['title'] as String,
+      description: data['description'] as String,
+      category: data['category'] as String,
+      dateLost: DateTime.parse(data['dateLost'] as String),
+      location: data['location'] as String,
+      status: data['status'] as String,
+      createdAt: DateTime.parse(data['createdAt'] as String),
+      photoBytes: data['photoBytes'] == null
+          ? null
+          : base64Decode(data['photoBytes'] as String),
+      photoName: data['photoName'] as String?,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'ownerId': ownerId,
+    'ownerEmail': ownerEmail,
+    'title': title,
+    'description': description,
+    'category': category,
+    'dateLost': dateLost.toIso8601String(),
+    'location': location,
+    'status': status,
+    'createdAt': createdAt.toIso8601String(),
+    'photoBytes': photoBytes == null ? null : base64Encode(photoBytes!),
+    'photoName': photoName,
+  };
 }
 
 class LostReportSession {
@@ -57,18 +89,195 @@ class LostReportSession {
   static void signOut() => _email = null;
 }
 
-class LostReportRepository {
-  static final List<LostReport> _reports = <LostReport>[];
+class LostReportAuditRecord {
+  final String id;
+  final String reportId;
+  final String action;
+  final String actorEmail;
+  final String details;
+  final DateTime createdAt;
 
-  static List<LostReport> reportsFor(String ownerEmail) {
-    final key = ownerEmail.trim().toLowerCase();
-    return List<LostReport>.unmodifiable(
-      _reports.where((report) => report.ownerEmail == key),
+  const LostReportAuditRecord({
+    required this.id,
+    required this.reportId,
+    required this.action,
+    required this.actorEmail,
+    required this.details,
+    required this.createdAt,
+  });
+
+  factory LostReportAuditRecord.fromJson(Map<String, dynamic> data) =>
+      LostReportAuditRecord(
+        id: data['id'] as String,
+        reportId: data['reportId'] as String,
+        action: data['action'] as String,
+        actorEmail: data['actorEmail'] as String,
+        details: data['details'] as String,
+        createdAt: DateTime.parse(data['createdAt'] as String),
+      );
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'reportId': reportId,
+    'action': action,
+    'actorEmail': actorEmail,
+    'details': details,
+    'createdAt': createdAt.toIso8601String(),
+  };
+}
+
+class LostReportRepository {
+  static const String _storageKey = 'campus_find_reports';
+  static const String _auditKey = 'campus_find_report_audit';
+
+  static Future<List<LostReport>> _reports() async {
+    final records = await LocalStore.readRecords(_storageKey);
+    return records.map(LostReport.fromJson).toList(growable: true);
+  }
+
+  static Future<void> _save(List<LostReport> reports) async {
+    await LocalStore.writeRecords(
+      _storageKey,
+      reports.map((report) => report.toJson()).toList(),
     );
   }
 
-  static LostReport add({
-    required String ownerEmail,
+  static Future<List<LostReportAuditRecord>> auditRecords() async {
+    AuthService.requireStaff();
+    final records = await LocalStore.readRecords(_auditKey);
+    return List<LostReportAuditRecord>.unmodifiable(
+      records.map(LostReportAuditRecord.fromJson),
+    );
+  }
+
+  static Future<void> _recordAudit({
+    required String reportId,
+    required String action,
+    required String details,
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final records = await LocalStore.readRecords(_auditKey);
+    records.add(
+      LostReportAuditRecord(
+        id: LocalStore.createId(),
+        reportId: reportId,
+        action: action,
+        actorEmail: user.email,
+        details: details,
+        createdAt: DateTime.now(),
+      ).toJson(),
+    );
+    await LocalStore.writeRecords(_auditKey, records);
+  }
+
+  static Future<List<LostReport>> reportsFor(String ownerId) async {
+    final reports = await _reports();
+    final ownedReports = reports
+        .where((report) => report.ownerId == ownerId)
+        .toList();
+    ownedReports.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return List<LostReport>.unmodifiable(ownedReports);
+  }
+
+  static Future<List<LostReport>> allListings() async =>
+      List<LostReport>.unmodifiable(await _reports());
+
+  static Future<List<LostReport>> allForStaffReview() async {
+    AuthService.requireStaff();
+    return List<LostReport>.unmodifiable(await _reports());
+  }
+
+  static Future<void> review(String reportId, String status) async {
+    AuthService.requireStaff();
+    const allowedStatuses = {'Open', 'Under Review', 'Resolved', 'Rejected'};
+    if (!allowedStatuses.contains(status)) {
+      throw ArgumentError.value(status, 'status', 'Unsupported report status');
+    }
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    reports[index] = LostReport(
+      id: report.id,
+      ownerId: report.ownerId,
+      ownerEmail: report.ownerEmail,
+      title: report.title,
+      description: report.description,
+      category: report.category,
+      dateLost: report.dateLost,
+      location: report.location,
+      status: status,
+      createdAt: report.createdAt,
+      photoBytes: report.photoBytes,
+      photoName: report.photoName,
+    );
+    await _save(reports);
+  }
+
+  static Future<void> edit({
+    required String reportId,
+    required String title,
+    required String description,
+    required String category,
+    required DateTime dateLost,
+    required String location,
+  }) async {
+    AuthService.requireStaff();
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    final edited = LostReport(
+      id: report.id,
+      ownerId: report.ownerId,
+      ownerEmail: report.ownerEmail,
+      title: title.trim(),
+      description: description.trim(),
+      category: category,
+      dateLost: DateTime(dateLost.year, dateLost.month, dateLost.day),
+      location: location.trim(),
+      status: report.status,
+      createdAt: report.createdAt,
+      photoBytes: report.photoBytes,
+      photoName: report.photoName,
+    );
+    reports[index] = edited;
+    await _save(reports);
+    await _recordAudit(
+      reportId: reportId,
+      action: 'Edited',
+      details: 'Report details updated by staff.',
+    );
+  }
+
+  static Future<void> remove({
+    required String reportId,
+    required String reason,
+  }) async {
+    AuthService.requireStaff();
+    final reports = await _reports();
+    final index = reports.indexWhere((report) => report.id == reportId);
+    if (index < 0) {
+      throw ArgumentError.value(reportId, 'reportId', 'Report not found');
+    }
+    final report = reports[index];
+    reports.removeAt(index);
+    await _save(reports);
+    await _recordAudit(
+      reportId: reportId,
+      action: 'Removed',
+      details:
+          'Reason: ${reason.trim().isEmpty ? 'No reason provided' : reason.trim()} '
+          'Title: ${report.title}',
+    );
+  }
+
+  static Future<LostReport> add({
     required String title,
     required String description,
     required String category,
@@ -76,46 +285,138 @@ class LostReportRepository {
     required String location,
     Uint8List? photoBytes,
     String? photoName,
-  }) {
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final now = DateTime.now();
     final report = LostReport(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
-      ownerEmail: ownerEmail.trim().toLowerCase(),
+      id: LocalStore.createId(),
+      ownerId: user.id,
+      ownerEmail: user.email,
       title: title.trim(),
       description: description.trim(),
       category: category,
       dateLost: DateTime(dateLost.year, dateLost.month, dateLost.day),
       location: location.trim(),
       status: 'Open',
-      createdAt: DateTime.now(),
+      createdAt: now,
       photoBytes: photoBytes,
       photoName: photoName,
     );
-    _reports.add(report);
+    final reports = await _reports();
+    reports.add(report);
+    await _save(reports);
     return report;
   }
+}
 
-  static void seedDemoReports(String ownerEmail) {
-    if (reportsFor(ownerEmail).isNotEmpty) return;
-    final now = DateTime.now();
-    add(
-      ownerEmail: ownerEmail,
-      title: 'Black Wallet',
-      description: 'Leather wallet with my student card inside.',
-      category: 'Other',
-      dateLost: now.subtract(const Duration(days: 2)),
-      location: 'Library, Level 2',
-    );
-    add(
-      ownerEmail: ownerEmail,
-      title: 'Student ID Card',
-      description: 'Name card lost near the student union.',
-      category: 'ID / Cards',
-      dateLost: now.subtract(const Duration(days: 5)),
-      location: 'Student Union',
+class LostReportClaim {
+  final String id;
+  final String claimantId;
+  final String reportId;
+  final String claimantEmail;
+  final String details;
+  final String status;
+  final DateTime createdAt;
+
+  const LostReportClaim({
+    required this.id,
+    required this.claimantId,
+    required this.reportId,
+    required this.claimantEmail,
+    required this.details,
+    required this.status,
+    required this.createdAt,
+  });
+
+  factory LostReportClaim.fromJson(Map<String, dynamic> data) {
+    return LostReportClaim(
+      id: data['id'] as String,
+      claimantId: data['claimantId'] as String,
+      reportId: data['reportId'] as String,
+      claimantEmail: data['claimantEmail'] as String,
+      details: data['details'] as String,
+      status: data['status'] as String,
+      createdAt: DateTime.parse(data['createdAt'] as String),
     );
   }
 
-  static void clear() => _reports.clear();
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'claimantId': claimantId,
+    'reportId': reportId,
+    'claimantEmail': claimantEmail,
+    'details': details,
+    'status': status,
+    'createdAt': createdAt.toIso8601String(),
+  };
+}
+
+class LostReportClaimRepository {
+  static const String _storageKey = 'campus_find_claims';
+
+  static Future<List<LostReportClaim>> _claims() async {
+    final records = await LocalStore.readRecords(_storageKey);
+    return records.map(LostReportClaim.fromJson).toList(growable: true);
+  }
+
+  static Future<void> _save(List<LostReportClaim> claims) async {
+    await LocalStore.writeRecords(
+      _storageKey,
+      claims.map((claim) => claim.toJson()).toList(),
+    );
+  }
+
+  static Future<LostReportClaim> submit({
+    required String reportId,
+    required String details,
+  }) async {
+    final user = AuthService.currentUser;
+    if (user == null) throw const AccessDeniedException();
+    final createdAt = DateTime.now();
+    final claim = LostReportClaim(
+      id: LocalStore.createId(),
+      claimantId: user.id,
+      reportId: reportId,
+      claimantEmail: user.email,
+      details: details.trim(),
+      status: 'Pending',
+      createdAt: createdAt,
+    );
+    final claims = await _claims();
+    claims.add(claim);
+    await _save(claims);
+    return claim;
+  }
+
+  static Future<List<LostReportClaim>> allForStaffReview() async {
+    AuthService.requireStaff();
+    return List<LostReportClaim>.unmodifiable(await _claims());
+  }
+
+  static Future<void> review(String claimId, String status) async {
+    AuthService.requireStaff();
+    const allowedStatuses = {'Pending', 'Approved', 'Rejected'};
+    if (!allowedStatuses.contains(status)) {
+      throw ArgumentError.value(status, 'status', 'Unsupported claim status');
+    }
+    final claims = await _claims();
+    final index = claims.indexWhere((claim) => claim.id == claimId);
+    if (index < 0) {
+      throw ArgumentError.value(claimId, 'claimId', 'Claim not found');
+    }
+    final claim = claims[index];
+    claims[index] = LostReportClaim(
+      id: claim.id,
+      claimantId: claim.claimantId,
+      reportId: claim.reportId,
+      claimantEmail: claim.claimantEmail,
+      details: claim.details,
+      status: status,
+      createdAt: claim.createdAt,
+    );
+    await _save(claims);
+  }
 }
 
 class _CategoryOption {
@@ -210,17 +511,6 @@ const List<String> _headerMenuItems = <String>[
   'My Claims',
 ];
 
-String? validatePhoto(String name, int sizeBytes) {
-  final extension = name.split('.').last.toLowerCase();
-  if (!_allowedPhotoExtensions.contains(extension)) {
-    return 'Only JPG, PNG or WEBP images are accepted.';
-  }
-  if (sizeBytes > _maxPhotoBytes) {
-    return 'Photo must be 5 MB or smaller.';
-  }
-  return null;
-}
-
 String formatReportDate(DateTime date) =>
     '${date.year.toString().padLeft(4, '0')}-'
     '${date.month.toString().padLeft(2, '0')}-'
@@ -256,10 +546,12 @@ class CampusHeader extends StatelessWidget {
     super.key,
     required this.activeItem,
     this.onPostLostItem,
+    this.onBrowseItems,
   });
 
   final String activeItem;
   final VoidCallback? onPostLostItem;
+  final VoidCallback? onBrowseItems;
 
   @override
   Widget build(BuildContext context) {
@@ -378,6 +670,8 @@ class CampusHeader extends StatelessWidget {
       child: TextButton(
         onPressed: active
             ? () {}
+            : label == 'Browse Items' && onBrowseItems != null
+            ? onBrowseItems
             : () => ScaffoldMessenger.of(
                 context,
               ).showSnackBar(SnackBar(content: Text('$label is coming soon.'))),
@@ -558,9 +852,9 @@ class _ReportLostPageState extends State<ReportLostPage> {
     return _stepKeys[_currentStep].currentState?.validate() ?? false;
   }
 
-  void _next() {
+  Future<void> _next() async {
     if (_currentStep == 3) {
-      _submit();
+      await _submit();
       return;
     }
     if (!_validateCurrentStep()) return;
@@ -577,29 +871,35 @@ class _ReportLostPageState extends State<ReportLostPage> {
     setState(() => _currentStep--);
   }
 
-  void _submit() {
+  Future<void> _submit() async {
     final email = LostReportSession.email;
     if (email == null || _category == null) return;
     if (!(_stepKeys[3].currentState?.validate() ?? false)) return;
 
-    LostReportRepository.add(
-      ownerEmail: email,
-      title: _titleCtrl.text,
-      description: _descriptionCtrl.text,
-      category: _category!,
-      dateLost: DateTime.parse(_dateCtrl.text.trim()),
-      location: _locationCtrl.text,
-      photoBytes: _photoBytes,
-      photoName: _photoName,
-    );
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Lost report saved as Open.')));
-    Navigator.pushReplacement(
-      context,
-      MaterialPageRoute<void>(builder: (_) => const MyReportsPage()),
-    );
+    try {
+      final report = await LostReportRepository.add(
+        title: _titleCtrl.text,
+        description: _descriptionCtrl.text,
+        category: _category!,
+        dateLost: DateTime.parse(_dateCtrl.text.trim()),
+        location: _locationCtrl.text,
+        photoBytes: _photoBytes,
+        photoName: _photoName,
+      );
+      if (!mounted) return;
+      Navigator.pop(context, report);
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not save report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
   }
 
   Widget _sectionCard({required Widget child}) {
@@ -635,6 +935,10 @@ class _ReportLostPageState extends State<ReportLostPage> {
               0,
               duration: const Duration(milliseconds: 250),
               curve: Curves.easeOut,
+            ),
+            onBrowseItems: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const BrowseItemsPage()),
             ),
           ),
           Expanded(
@@ -1370,13 +1674,866 @@ class _ReportLostPageState extends State<ReportLostPage> {
   }
 }
 
-class MyReportsPage extends StatelessWidget {
-  const MyReportsPage({super.key});
+class AccessDeniedPage extends StatelessWidget {
+  const AccessDeniedPage({super.key});
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Access denied')),
+    body: const Center(
+      child: Padding(
+        padding: EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.lock_outline, size: 52, color: Color(0xFF9CA3AF)),
+            SizedBox(height: 12),
+            Text(
+              'Access denied',
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
+            ),
+            SizedBox(height: 6),
+            Text('Your account does not have permission to view this page.'),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class StaffReviewPage extends StatefulWidget {
+  const StaffReviewPage({super.key});
+
+  @override
+  State<StaffReviewPage> createState() => _StaffReviewPageState();
+}
+
+class _StaffReviewPageState extends State<StaffReviewPage> {
+  late Future<_ReviewQueues> _queues;
+
+  @override
+  void initState() {
+    super.initState();
+    _queues = AuthService.canReview
+        ? _loadQueues()
+        : Future.value(const _ReviewQueues([], []));
+  }
+
+  Future<_ReviewQueues> _loadQueues() async {
+    final reports = await LostReportRepository.allForStaffReview();
+    final claims = await LostReportClaimRepository.allForStaffReview();
+    return _ReviewQueues(reports, claims);
+  }
+
+  Future<void> _updateReport(String id, String status) async {
+    try {
+      await LostReportRepository.review(id, status);
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _editReport(LostReport report) async {
+    final titleController = TextEditingController(text: report.title);
+    final descriptionController = TextEditingController(
+      text: report.description,
+    );
+    final locationController = TextEditingController(text: report.location);
+    String category = report.category;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Edit report'),
+        content: SingleChildScrollView(
+          child: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  key: const Key('edit_report_title'),
+                  controller: titleController,
+                  decoration: const InputDecoration(labelText: 'Title'),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('edit_report_description'),
+                  controller: descriptionController,
+                  maxLines: 3,
+                  decoration: const InputDecoration(labelText: 'Description'),
+                ),
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: lostReportCategories.contains(category)
+                      ? category
+                      : 'Other',
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: lostReportCategories
+                      .map(
+                        (value) =>
+                            DropdownMenuItem(value: value, child: Text(value)),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    if (value != null) category = value;
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('edit_report_location'),
+                  controller: locationController,
+                  decoration: const InputDecoration(labelText: 'Location'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Save changes'),
+          ),
+        ],
+      ),
+    );
+
+    final editedTitle = titleController.text;
+    final editedDescription = descriptionController.text;
+    final editedLocation = locationController.text;
+    titleController.dispose();
+    descriptionController.dispose();
+    locationController.dispose();
+    if (confirmed != true) return;
+
+    try {
+      await LostReportRepository.edit(
+        reportId: report.id,
+        title: editedTitle,
+        description: editedDescription,
+        category: category,
+        dateLost: report.dateLost,
+        location: editedLocation,
+      );
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not edit report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _removeReport(LostReport report) async {
+    final reasonController = TextEditingController();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Remove report?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('This will remove "${report.title}" from listings.'),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('remove_report_reason'),
+              controller: reasonController,
+              decoration: const InputDecoration(labelText: 'Reason (optional)'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('confirm_remove_report'),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFDC2626),
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    final reason = reasonController.text;
+    reasonController.dispose();
+    if (confirmed != true) return;
+
+    try {
+      await LostReportRepository.remove(reportId: report.id, reason: reason);
+      if (mounted) {
+        setState(() => _queues = _loadQueues());
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Report removed and recorded.')),
+        );
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not remove report: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  Future<void> _updateClaim(String id, String status) async {
+    try {
+      await LostReportClaimRepository.review(id, status);
+      if (mounted) setState(() => _queues = _loadQueues());
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update claim: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final email = LostReportSession.email;
-    if (email == null) {
+    if (!AuthService.canReview) return const AccessDeniedPage();
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Staff review'),
+          bottom: const TabBar(
+            tabs: [
+              Tab(text: 'Reports'),
+              Tab(text: 'Claims'),
+            ],
+          ),
+        ),
+        body: FutureBuilder<_ReviewQueues>(
+          future: _queues,
+          builder: (context, snapshot) {
+            if (snapshot.hasError) {
+              if (snapshot.error is AccessDeniedException) {
+                return const AccessDeniedPage();
+              }
+              return Center(
+                child: Text('Could not load review queue: ${snapshot.error}'),
+              );
+            }
+            if (!snapshot.hasData) {
+              return const Center(child: CircularProgressIndicator());
+            }
+            final reports = snapshot.data!.reports;
+            final claims = snapshot.data!.claims;
+            return TabBarView(
+              children: [
+                reports.isEmpty
+                    ? const _EmptyReviewQueue(label: 'No reports to review.')
+                    : ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          for (final report in reports)
+                            Card(
+                              child: ListTile(
+                                title: Text(report.title),
+                                subtitle: Text(
+                                  '${report.category} · ${report.location}\n'
+                                  '${report.description}\n'
+                                  'Reported by ${report.ownerEmail}\n'
+                                  'Lost: ${formatReportDate(report.dateLost)} · '
+                                  'Submitted: ${formatReportDate(report.createdAt)} · '
+                                  'ID: ${report.id}',
+                                ),
+                                isThreeLine: false,
+                                trailing: PopupMenuButton<String>(
+                                  key: Key('report_actions_${report.id}'),
+                                  tooltip: 'Report actions',
+                                  onSelected: (action) {
+                                    if (action == 'Edit') {
+                                      _editReport(report);
+                                    } else if (action == 'Remove') {
+                                      _removeReport(report);
+                                    } else {
+                                      _updateReport(report.id, action);
+                                    }
+                                  },
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'Under Review',
+                                      child: Text('Under review'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Resolved',
+                                      child: Text('Resolve'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Rejected',
+                                      child: Text('Reject'),
+                                    ),
+                                    PopupMenuDivider(),
+                                    PopupMenuItem(
+                                      value: 'Edit',
+                                      child: Text('Edit report'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Remove',
+                                      child: Text('Remove report'),
+                                    ),
+                                  ],
+                                  child: Chip(label: Text(report.status)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                claims.isEmpty
+                    ? const _EmptyReviewQueue(label: 'No claims to review.')
+                    : ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          for (final claim in claims)
+                            Card(
+                              child: ListTile(
+                                title: Text(
+                                  'Claim for report ${claim.reportId}',
+                                ),
+                                subtitle: Text(
+                                  '${claim.details}\n'
+                                  'Submitted by ${claim.claimantEmail}',
+                                ),
+                                isThreeLine: true,
+                                trailing: PopupMenuButton<String>(
+                                  tooltip: 'Update claim status',
+                                  onSelected: (status) =>
+                                      _updateClaim(claim.id, status),
+                                  itemBuilder: (_) => const [
+                                    PopupMenuItem(
+                                      value: 'Approved',
+                                      child: Text('Approve'),
+                                    ),
+                                    PopupMenuItem(
+                                      value: 'Rejected',
+                                      child: Text('Reject'),
+                                    ),
+                                  ],
+                                  child: Chip(label: Text(claim.status)),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewQueues {
+  const _ReviewQueues(this.reports, this.claims);
+
+  final List<LostReport> reports;
+  final List<LostReportClaim> claims;
+}
+
+class BrowseItemsPage extends StatefulWidget {
+  const BrowseItemsPage({super.key});
+
+  @override
+  State<BrowseItemsPage> createState() => _BrowseItemsPageState();
+}
+
+class _BrowseItemsPageState extends State<BrowseItemsPage> {
+  final _searchController = TextEditingController();
+  final _locationController = TextEditingController();
+  final _dateController = TextEditingController();
+  late Future<List<LostReport>> _listings;
+  String _keyword = '';
+  String? _category;
+  DateTime? _date;
+  String _location = '';
+  String _reportType = 'All';
+
+  @override
+  void initState() {
+    super.initState();
+    _listings = LostReportRepository.allListings();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _locationController.dispose();
+    _dateController.dispose();
+    super.dispose();
+  }
+
+  List<LostReport> _matchingListings(List<LostReport> listings) {
+    final keyword = _keyword.trim().toLowerCase();
+    return listings
+        .where(
+          (report) =>
+              (keyword.isEmpty ||
+                  report.title.toLowerCase().contains(keyword) ||
+                  report.description.toLowerCase().contains(keyword)) &&
+              (_category == null || report.category == _category) &&
+              (_date == null ||
+                  (report.dateLost.year == _date!.year &&
+                      report.dateLost.month == _date!.month &&
+                      report.dateLost.day == _date!.day)) &&
+              (_location.trim().isEmpty ||
+                  report.location.toLowerCase().contains(
+                    _location.trim().toLowerCase(),
+                  )) &&
+              (_reportType == 'All' || _reportType == 'Lost'),
+        )
+        .toList(growable: false);
+  }
+
+  bool get _hasActiveFilters =>
+      _keyword.trim().isNotEmpty ||
+      _category != null ||
+      _date != null ||
+      _location.trim().isNotEmpty ||
+      _reportType != 'All';
+
+  void _clearFilters() {
+    setState(() {
+      _searchController.clear();
+      _locationController.clear();
+      _dateController.clear();
+      _keyword = '';
+      _category = null;
+      _date = null;
+      _location = '';
+      _reportType = 'All';
+    });
+  }
+
+  Future<void> _selectDate() async {
+    final today = DateTime.now();
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _date ?? today,
+      firstDate: DateTime(2000),
+      lastDate: today,
+      helpText: 'Filter by date lost',
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _date = selected;
+        _dateController.text = formatReportDate(selected);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (AuthService.currentUser == null || LostReportSession.email == null) {
+      return Scaffold(
+        backgroundColor: _canvas,
+        body: Column(
+          children: [
+            const CampusHeader(activeItem: 'Browse Items'),
+            const Expanded(
+              child: Center(child: Text('Please log in to browse listings.')),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: _canvas,
+      body: Column(
+        children: [
+          CampusHeader(
+            activeItem: 'Browse Items',
+            onPostLostItem: () => Navigator.push(
+              context,
+              MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
+            ),
+          ),
+          Expanded(
+            child: FutureBuilder<List<LostReport>>(
+              future: _listings,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Could not load listings: ${snapshot.error}'),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final listings = _matchingListings(snapshot.data!);
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1000),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'Browse lost items',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            key: const Key('listing-search'),
+                            controller: _searchController,
+                            decoration: _fieldDecoration(
+                              'Search listings',
+                              hint: 'Search by title or description',
+                              suffixIcon: const Icon(Icons.search),
+                            ),
+                            textInputAction: TextInputAction.search,
+                            onChanged: (value) =>
+                                setState(() => _keyword = value),
+                            onSubmitted: (value) =>
+                                setState(() => _keyword = value),
+                          ),
+                          const SizedBox(height: 16),
+                          LayoutBuilder(
+                            builder: (context, constraints) {
+                              final width = constraints.maxWidth > 680
+                                  ? (constraints.maxWidth - 16) / 2
+                                  : constraints.maxWidth;
+                              return Wrap(
+                                spacing: 16,
+                                runSpacing: 12,
+                                children: [
+                                  SizedBox(
+                                    width: width,
+                                    child: DropdownButtonFormField<String>(
+                                      key: const Key('listing-category-filter'),
+                                      initialValue: _category,
+                                      decoration: _fieldDecoration('Category'),
+                                      items: [
+                                        const DropdownMenuItem<String>(
+                                          value: null,
+                                          child: Text('All categories'),
+                                        ),
+                                        for (final category
+                                            in lostReportCategories)
+                                          DropdownMenuItem<String>(
+                                            value: category,
+                                            child: Text(category),
+                                          ),
+                                      ],
+                                      onChanged: (value) =>
+                                          setState(() => _category = value),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: TextField(
+                                      key: const Key('listing-date-filter'),
+                                      controller: _dateController,
+                                      readOnly: true,
+                                      onTap: _selectDate,
+                                      decoration: _fieldDecoration(
+                                        'Date lost',
+                                        hint: 'Any date',
+                                        suffixIcon: const Icon(
+                                          Icons.calendar_today,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: TextField(
+                                      key: const Key('listing-location-filter'),
+                                      controller: _locationController,
+                                      decoration: _fieldDecoration(
+                                        'Location',
+                                        hint: 'Filter by location',
+                                      ),
+                                      onChanged: (value) =>
+                                          setState(() => _location = value),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: width,
+                                    child: DropdownButtonFormField<String>(
+                                      key: const Key('listing-type-filter'),
+                                      initialValue: _reportType,
+                                      decoration: _fieldDecoration('Type'),
+                                      items: const [
+                                        DropdownMenuItem(
+                                          value: 'All',
+                                          child: Text('All types'),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'Lost',
+                                          child: Text('Lost'),
+                                        ),
+                                        DropdownMenuItem(
+                                          value: 'Found',
+                                          child: Text('Found'),
+                                        ),
+                                      ],
+                                      onChanged: (value) {
+                                        if (value != null) {
+                                          setState(() => _reportType = value);
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              );
+                            },
+                          ),
+                          if (_hasActiveFilters) ...[
+                            const SizedBox(height: 8),
+                            Align(
+                              alignment: Alignment.centerRight,
+                              child: TextButton.icon(
+                                key: const Key('listing-clear-filters'),
+                                onPressed: _clearFilters,
+                                icon: const Icon(Icons.clear_all),
+                                label: const Text('Clear all'),
+                              ),
+                            ),
+                          ],
+                          const SizedBox(height: 8),
+                          if (listings.isEmpty)
+                            Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Text(
+                                  !_hasActiveFilters
+                                      ? 'No listings available.'
+                                      : 'No listings match your search and filters.',
+                                  key: const Key('listing-empty-state'),
+                                ),
+                              ),
+                            )
+                          else
+                            for (final report in listings) ...[
+                              Card(
+                                color: Colors.white,
+                                child: ListTile(
+                                  title: Text(report.title),
+                                  subtitle: Text(
+                                    '${report.description}\n'
+                                    '${report.category} · ${report.location}\n'
+                                    'Lost · ${formatReportDate(report.dateLost)}',
+                                  ),
+                                  isThreeLine: true,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                            ],
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyReviewQueue extends StatelessWidget {
+  const _EmptyReviewQueue({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Text(label, style: const TextStyle(color: Colors.grey)),
+  );
+}
+
+class RoleManagementPage extends StatefulWidget {
+  const RoleManagementPage({super.key});
+
+  @override
+  State<RoleManagementPage> createState() => _RoleManagementPageState();
+}
+
+class _RoleManagementPageState extends State<RoleManagementPage> {
+  late Future<List<UserRecord>> _users;
+
+  @override
+  void initState() {
+    super.initState();
+    _users = AuthService.canManageRoles
+        ? AuthService.allUsers()
+        : Future.value(const <UserRecord>[]);
+  }
+
+  Future<void> _updateRole(String userId, UserRole role) async {
+    try {
+      await AuthService.updateRole(userId, role);
+      if (mounted) {
+        final users = AuthService.allUsers();
+        setState(() {
+          _users = users;
+        });
+      }
+    } on StateError catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not update role: ${error.message}')),
+        );
+      }
+    } on AccessDeniedException {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Access denied')));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AuthService.canManageRoles) return const AccessDeniedPage();
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Manage user roles')),
+      body: FutureBuilder<List<UserRecord>>(
+        future: _users,
+        builder: (context, snapshot) {
+          if (snapshot.hasError) {
+            if (snapshot.error is AccessDeniedException) {
+              return const AccessDeniedPage();
+            }
+            return Center(
+              child: Text('Could not load users: ${snapshot.error}'),
+            );
+          }
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          final users = snapshot.data!;
+          if (users.isEmpty) {
+            return const Center(child: Text('No registered users.'));
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: users.length,
+            itemBuilder: (context, index) {
+              final user = users[index];
+              return Card(
+                child: ListTile(
+                  leading: CircleAvatar(
+                    child: Text(
+                      user.name.isEmpty ? '?' : user.name[0].toUpperCase(),
+                    ),
+                  ),
+                  title: Text(user.name),
+                  subtitle: Text(user.email),
+                  trailing: DropdownButton<UserRole>(
+                    value: user.role,
+                    onChanged: (role) {
+                      if (role != null) _updateRole(user.id, role);
+                    },
+                    items: [
+                      for (final role in UserRole.values)
+                        DropdownMenuItem(value: role, child: Text(role.label)),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class MyReportsPage extends StatefulWidget {
+  const MyReportsPage({super.key, this.newReport});
+
+  final LostReport? newReport;
+
+  @override
+  State<MyReportsPage> createState() => _MyReportsPageState();
+}
+
+class _MyReportsPageState extends State<MyReportsPage> {
+  late Future<List<LostReport>> _reports;
+  late bool _showSuccessConfirmation;
+
+  @override
+  void initState() {
+    super.initState();
+    _showSuccessConfirmation = widget.newReport != null;
+    final user = AuthService.currentUser;
+    _reports = _loadReports(user?.id);
+  }
+
+  Future<List<LostReport>> _loadReports(String? ownerId) async {
+    if (ownerId == null) return const <LostReport>[];
+
+    final reports = await LostReportRepository.reportsFor(ownerId);
+    final newReport = widget.newReport;
+    if (newReport == null || newReport.ownerId != ownerId) {
+      return reports;
+    }
+
+    final withNewReport = reports
+        .where((report) => report.id != newReport.id)
+        .toList();
+    withNewReport.insert(0, newReport);
+    return List<LostReport>.unmodifiable(withNewReport);
+  }
+
+  Future<void> _refreshReports() async {
+    final user = AuthService.currentUser;
+    setState(() {
+      _reports = _loadReports(user?.id);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (AuthService.currentUser == null || LostReportSession.email == null) {
       return Scaffold(
         backgroundColor: _canvas,
         body: Column(
@@ -1390,53 +2547,151 @@ class MyReportsPage extends StatelessWidget {
       );
     }
 
-    LostReportRepository.seedDemoReports(email);
-    final reports = LostReportRepository.reportsFor(email);
     return Scaffold(
       backgroundColor: _canvas,
       body: Column(
         children: [
           CampusHeader(
             activeItem: 'My Claims',
-            onPostLostItem: () => Navigator.push(
-              context,
-              MaterialPageRoute<void>(builder: (_) => const ReportLostPage()),
-            ),
+            onPostLostItem: () async {
+              final submittedReport = await Navigator.push<LostReport>(
+                context,
+                MaterialPageRoute<LostReport>(
+                  builder: (_) => const ReportLostPage(),
+                ),
+              );
+              if (!mounted) return;
+              await _refreshReports();
+              if (submittedReport != null) {
+                setState(() => _showSuccessConfirmation = true);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Lost report submitted successfully.'),
+                  ),
+                );
+              }
+            },
           ),
           Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Center(
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 1000),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      const Text(
-                        'My reports',
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w700,
-                          color: _ink,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Track every lost item you have reported.',
-                        style: TextStyle(fontSize: 13, color: _muted),
-                      ),
-                      const SizedBox(height: 20),
-                      if (reports.isEmpty)
-                        _emptyCard()
-                      else
-                        for (final report in reports) ...[
-                          _reportCard(context, report),
-                          const SizedBox(height: 12),
+            child: FutureBuilder<List<LostReport>>(
+              future: _reports,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Text('Could not load reports: ${snapshot.error}'),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final reports = snapshot.data!;
+                return SingleChildScrollView(
+                  padding: const EdgeInsets.all(24),
+                  child: Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1000),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'My reports',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              color: _ink,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Track every lost item you have reported.',
+                            style: TextStyle(fontSize: 13, color: _muted),
+                          ),
+                          if (_showSuccessConfirmation) ...[
+                            const SizedBox(height: 16),
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16,
+                                vertical: 12,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFECFDF3),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: const Color(0xFFABEFC6),
+                                ),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(
+                                    Icons.check_circle_outline,
+                                    color: _success,
+                                  ),
+                                  SizedBox(width: 10),
+                                  Expanded(
+                                    child: Text(
+                                      'Lost report submitted successfully.',
+                                      style: TextStyle(
+                                        color: Color(0xFF067647),
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                          if (AuthService.canReview ||
+                              AuthService.canManageRoles) ...[
+                            const SizedBox(height: 16),
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 10,
+                              children: [
+                                if (AuthService.canReview)
+                                  OutlinedButton.icon(
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute<void>(
+                                        builder: (_) => const StaffReviewPage(),
+                                      ),
+                                    ),
+                                    icon: const Icon(Icons.fact_check_outlined),
+                                    label: const Text(
+                                      'Review reports & claims',
+                                    ),
+                                  ),
+                                if (AuthService.canManageRoles)
+                                  OutlinedButton.icon(
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute<void>(
+                                        builder: (_) =>
+                                            const RoleManagementPage(),
+                                      ),
+                                    ),
+                                    icon: const Icon(
+                                      Icons.manage_accounts_outlined,
+                                    ),
+                                    label: const Text('Manage user roles'),
+                                  ),
+                              ],
+                            ),
+                          ],
+                          const SizedBox(height: 20),
+                          if (reports.isEmpty)
+                            _emptyCard()
+                          else
+                            for (final report in reports) ...[
+                              _reportCard(report),
+                              const SizedBox(height: 12),
+                            ],
                         ],
-                    ],
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
         ],
@@ -1457,217 +2712,85 @@ class MyReportsPage extends StatelessWidget {
     );
   }
 
-  Widget _reportCard(BuildContext context, LostReport report) {
-    return InkWell(
-      onTap: () => Navigator.push(
-        context,
-        MaterialPageRoute<void>(
-          builder: (_) => ReportDetailPage(report: report),
-        ),
-      ),
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _border),
-          boxShadow: const <BoxShadow>[
-            BoxShadow(
-              color: Color(0x0A111827),
-              blurRadius: 12,
-              offset: Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    report.title,
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                    ),
-                  ),
-                ),
-                Chip(
-                  label: Text(report.status),
-                  backgroundColor: _lightBlue,
-                  labelStyle: const TextStyle(
-                    color: _blue,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 20,
-              runSpacing: 6,
-              children: [
-                Text(
-                  'Category: ${report.category}',
-                  style: const TextStyle(fontSize: 12, color: _muted),
-                ),
-                Text(
-                  'Date lost: ${formatReportDate(report.dateLost)}',
-                  style: const TextStyle(fontSize: 12, color: _muted),
-                ),
-                Text(
-                  'Location: ${report.location}',
-                  style: const TextStyle(fontSize: 12, color: _muted),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              report.description,
-              style: const TextStyle(fontSize: 13, color: _ink),
-            ),
-            if (report.photoBytes != null) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: const [
-                  Icon(Icons.photo_camera, size: 16, color: _blue),
-                  SizedBox(width: 6),
-                  Text(
-                    'Photo attached',
-                    style: TextStyle(fontSize: 12, color: _blue),
-                  ),
-                ],
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class ReportDetailPage extends StatelessWidget {
-  const ReportDetailPage({super.key, required this.report});
-
-  final LostReport report;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _canvas,
-      appBar: AppBar(
-        title: const Text('Report detail'),
-        foregroundColor: _ink,
-        backgroundColor: Colors.white,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 800),
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _border),
-                boxShadow: const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x0A111827),
-                    blurRadius: 12,
-                    offset: Offset(0, 4),
-                  ),
-                ],
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    report.title,
-                    style: const TextStyle(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: _ink,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  if (report.photoBytes != null) ...[
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: Image.memory(
-                        report.photoBytes!,
-                        width: double.infinity,
-                        height: 260,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                    if (report.photoName != null) ...[
-                      const SizedBox(height: 6),
-                      Text(
-                        report.photoName!,
-                        style: const TextStyle(fontSize: 12, color: _muted),
-                      ),
-                    ],
-                  ] else
-                    Container(
-                      width: double.infinity,
-                      height: 120,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF3F4F6),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Center(
-                        child: Icon(
-                          Icons.image_not_supported_outlined,
-                          size: 40,
-                          color: _muted,
-                        ),
-                      ),
-                    ),
-                  const SizedBox(height: 20),
-                  _detailRow('Status', report.status),
-                  _detailRow('Category', report.category),
-                  _detailRow('Date lost', formatReportDate(report.dateLost)),
-                  _detailRow('Location', report.location),
-                  _detailRow('Description', report.description),
-                ],
-              ),
-            ),
+  Widget _reportCard(LostReport report) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _border),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x0A111827),
+            blurRadius: 12,
+            offset: Offset(0, 4),
           ),
-        ),
+        ],
       ),
-    );
-  }
-
-  Widget _detailRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SizedBox(
-            width: 110,
-            child: Text(
-              label,
-              style: const TextStyle(fontSize: 13, color: _muted),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value.isEmpty ? '-' : value,
-              style: const TextStyle(
-                fontSize: 13,
-                color: _ink,
-                fontWeight: FontWeight.w500,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  report.title,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: _ink,
+                  ),
+                ),
               ),
-            ),
+              Chip(
+                label: Text(report.status),
+                backgroundColor: _lightBlue,
+                labelStyle: const TextStyle(
+                  color: _blue,
+                  fontWeight: FontWeight.w700,
+                  fontSize: 12,
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 20,
+            runSpacing: 6,
+            children: [
+              Text(
+                'Category: ${report.category}',
+                style: const TextStyle(fontSize: 12, color: _muted),
+              ),
+              Text(
+                'Date lost: ${formatReportDate(report.dateLost)}',
+                style: const TextStyle(fontSize: 12, color: _muted),
+              ),
+              Text(
+                'Location: ${report.location}',
+                style: const TextStyle(fontSize: 12, color: _muted),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            report.description,
+            style: const TextStyle(fontSize: 13, color: _ink),
+          ),
+          if (report.photoBytes != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              children: const [
+                Icon(Icons.photo_camera, size: 16, color: _blue),
+                SizedBox(width: 6),
+                Text(
+                  'Photo attached',
+                  style: TextStyle(fontSize: 12, color: _blue),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

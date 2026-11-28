@@ -1,18 +1,34 @@
-import 'package:flutter/material.dart';
-import 'package:lost_and_found_app/UserAccess.dart';
+import 'package:material_ui/material_ui.dart';
 
-void main() => runApp(const LostAndFoundApp());
+import 'UserAccess.dart';
+import 'auth_service.dart';
+import 'lost_report.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await AuthService.initialize();
+  final user = await AuthService.restoreSession();
+  if (user != null) LostReportSession.signIn(user.email);
+  runApp(LostAndFoundApp(isSignedIn: user != null));
+}
 
 class LostAndFoundApp extends StatelessWidget {
-  const LostAndFoundApp({super.key});
+  const LostAndFoundApp({super.key, required this.isSignedIn});
+
+  final bool isSignedIn;
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Campus Lost and Found',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: Colors.indigo, useMaterial3: true),
-      home: const LoginPage(),
+      theme: ThemeData(
+        colorSchemeSeed: const Color(0xFF1D4E89),
+        useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFFF7F8FA),
+        fontFamily: 'Roboto',
+      ),
+      home: isSignedIn ? const MyReportsPage() : const LoginPage(),
     );
   }
 }
